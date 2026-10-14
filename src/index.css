@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-gold: #D4AF37;
+  --color-brand-gold-shadow: rgba(212, 175, 55, 0.2);
+  
+  /* Light Theme Defaults */
+  --color-main-bg: #FFFFFF;
+  --color-main-sidebar: #F8F8F8;
+  --color-main-card: #FFFFFF;
+  --color-main-text: #000000;
+  --color-main-muted: #666666;
+  --color-main-border: rgba(0, 0, 0, 0.08);
+  --color-main-accent: var(--color-brand-gold);
+  
+  --font-inter: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+@layer base {
+  :root {
+    --bg: #FFFFFF;
+    --sidebar: #F9F9F9;
+    --card: #FFFFFF;
+    --text: #000000;
+    --muted: #666666;
+    --border: rgba(0, 0, 0, 0.05);
+    --accent: #D4AF37;
+  }
+
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: var(--font-inter);
+  }
+}
+
+/* Custom Utility Classes for cleaner App.tsx */
+@utility bg-main {
+  background-color: var(--bg);
+}
+@utility bg-sidebar {
+  background-color: var(--sidebar);
+}
+@utility bg-card {
+  background-color: var(--card);
+}
+@utility text-main {
+  color: var(--text);
+}
+@utility text-muted {
+  color: var(--muted);
+}
+@utility text-accent {
+  color: var(--accent);
+}
+@utility border-main {
+  border-color: var(--border);
+}
+@utility bg-accent {
+  background-color: var(--accent);
+}
+

@@ -1,0 +1,181 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ---------------------------------------------------------
+    // GLOBAL HELPERS
+    // ---------------------------------------------------------
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    
+    function incoming() {
+      return request.resource.data;
+    }
+    
+    function existing() {
+      return resource.data;
+    }
+    
+    // Check if user is a member of the company
+    function isCompanyMember(companyId) {
+      return isSignedIn() && (
+        // Check if the user document says they belong to this company
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.linkedCompanyId == companyId ||
+        // Orc if they ARE the company owner (the company ID is often the owner ID or they are linked)
+        get(/databases/$(database)/documents/companies/$(companyId)).data.ownerId == request.auth.uid
+      );
+    }
+    
+    // ---------------------------------------------------------
+    // VALIDATORS
+    // ---------------------------------------------------------
+    
+    function isValidAccount(data) {
+      return data.keys().hasAll(['id', 'type', 'name', 'email']) &&
+             data.id is string && data.type in ['COMPANY', 'USER'] &&
+             data.name is string && data.name.size() <= 100 &&
+             data.email is string && data.email.size() <= 100;
+    }
+    
+    function isValidCompany(data) {
+      return data.keys().hasAll(['id', 'name', 'ownerId']) &&
+             data.id == request.auth.uid && // In our case, company ID matches owner ID for root companies
+             data.name is string && data.name.size() <= 100 &&
+             data.ownerId == request.auth.uid;
+    }
+    
+    function isValidProduct(data) {
+      return data.keys().hasAll(['id', 'name', 'category', 'type', 'unit', 'minStock']) &&
+             data.id is string && data.name is string && data.name.size() <= 100 &&
+             data.category is string &&
+             data.type in ['materia prima', 'producción', 'producto terminado'] &&
+             data.unit in ['unidad', 'kilo', 'litro'] &&
+             data.minStock is number;
+    }
+    
+    function isValidBatch(data) {
+      return data.keys().hasAll(['id', 'productId', 'entryDate', 'quantity', 'remainingQuantity', 'unitCost', 'supplier']) &&
+             data.id is string && data.productId is string &&
+             data.quantity is number && data.remainingQuantity is number &&
+             data.unitCost is number;
+    }
+    
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['id', 'productId', 'type', 'quantity', 'unitCost', 'date', 'reference']) &&
+             data.type in ['ENTRY', 'EXIT', 'PURCHASE', 'SALE'] &&
+             data.quantity is number && data.unitCost is number;
+    }
+    
+    function isValidAudit(data) {
+      return data.keys().hasAll(['id', 'timestamp', 'userId', 'userName', 'action', 'entityType', 'entityId', 'details']) &&
+             data.userId == request.auth.uid &&
+             data.action in ['CREATE', 'UPDATE', 'DELETE', 'SYSTEM'] &&
+             data.entityType in ['PRODUCT', 'BATCH', 'TRANSACTION', 'TEAM', 'CONFIG', 'PRODUCTION'];
+    }
+    
+    function isValidNotification(data) {
+      return data.keys().hasAll(['id', 'type', 'title', 'message', 'timestamp', 'read']) &&
+             data.type in ['LOW_STOCK', 'SUCCESS', 'INFO', 'WARNING'] &&
+             data.read is bool;
+    }
+
+    // ---------------------------------------------------------
+    // MATCH BLOCKS
+    // ---------------------------------------------------------
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    match /{path=**}/team/{memberId} {
+      allow read: if isSignedIn() && (resource.data.email == request.auth.token.email || isCompanyMember(path[1]));
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) || (resource.data.email is string && resource.data.email.size() > 0);
+      allow list: if true;
+      allow create: if isValidAccount(incoming());
+      allow update: if isValidAccount(incoming()) && (
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'companyName', 'linkedCompanyId', 'role', 'areas', 'updatedAt', 'password'])
+      );
+    }
+    
+    match /companies/{companyId} {
+      allow get: if isCompanyMember(companyId);
+      allow create: if isOwner(companyId) && isValidCompany(incoming());
+      allow update: if isOwner(companyId) && isValidCompany(incoming()) && (
+        incoming().diff(existing()).affectedKeys().hasOnly(['name'])
+      );
+      
+      match /team/{memberId} {
+        allow read: if isCompanyMember(companyId) || (isSignedIn() && resource.data.email == request.auth.token.email);
+        allow write: if isCompanyMember(companyId) && isValidId(memberId);
+      }
+      
+      match /products/{productId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if isCompanyMember(companyId) && isValidProduct(incoming());
+        allow update: if isCompanyMember(companyId) && isValidProduct(incoming());
+        allow delete: if isCompanyMember(companyId);
+      }
+      
+      match /batches/{batchId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if isCompanyMember(companyId) && isValidBatch(incoming());
+        allow update: if isCompanyMember(companyId) && isValidBatch(incoming());
+        allow delete: if isCompanyMember(companyId);
+      }
+      
+      match /transactions/{transactionId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if isCompanyMember(companyId) && isValidTransaction(incoming());
+        allow delete: if isCompanyMember(companyId);
+      }
+
+      match /productionOrders/{orderId} {
+        allow read: if isCompanyMember(companyId);
+        allow create, update: if isCompanyMember(companyId);
+        allow delete: if isCompanyMember(companyId);
+      }
+      
+      match /auditLogs/{logId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if isCompanyMember(companyId) && isValidAudit(incoming());
+      }
+      
+      match /notifications/{notifId} {
+        allow read: if isCompanyMember(companyId);
+        allow create: if isCompanyMember(companyId) && isValidNotification(incoming());
+        allow update: if isCompanyMember(companyId) && incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+        allow delete: if isCompanyMember(companyId);
+      }
+    }
+
+    match /passwordResets/{resetId} {
+      allow create: if isValidId(resetId) &&
+                       incoming().keys().hasAll(['email', 'timestamp']) &&
+                       incoming().email is string &&
+                       incoming().email.size() <= 120;
+      allow read: if isSignedIn();
+    }
+
+    match /userCredentials/{credId} {
+      allow read: if true;
+      allow create, update: if isValidId(credId) &&
+                               incoming().keys().hasAll(['email', 'passwordHash', 'updatedAt']) &&
+                               incoming().email is string &&
+                               incoming().passwordHash is string;
+      allow delete: if isValidId(credId);
+    }
+  }
+}

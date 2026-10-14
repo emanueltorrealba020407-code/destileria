@@ -1,0 +1,166 @@
+{
+  "entities": {
+    "Account": {
+      "title": "Account",
+      "description": "User profile and authentication linkage.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["COMPANY", "USER"] },
+        "companyName": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "linkedCompanyId": { "type": "string" },
+        "role": { "type": "string", "enum": ["ADMIN", "OPERATOR"] },
+        "areas": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "type", "name", "email"]
+    },
+    "Company": {
+      "title": "Company",
+      "description": "Enterprise account information.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "ownerId"]
+    },
+    "TeamMember": {
+      "title": "Team Member",
+      "description": "A member associated with a company.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["ADMIN", "OPERATOR"] },
+        "areas": { "type": "array", "items": { "type": "string" } },
+        "status": { "type": "string", "enum": ["active", "inactive"] }
+      },
+      "required": ["id", "name", "email", "role", "status"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Inventory product definition.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "type": { "type": "string", "enum": ["materia prima", "producción", "producto terminado"] },
+        "unit": { "type": "string", "enum": ["unidad", "kilo", "litro"] },
+        "minStock": { "type": "number" }
+      },
+      "required": ["id", "name", "category", "type", "unit", "minStock"]
+    },
+    "Batch": {
+      "title": "Batch",
+      "description": "A specific lot or entry of products.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "productId": { "type": "string" },
+        "entryDate": { "type": "string", "format": "date-time" },
+        "quantity": { "type": "number" },
+        "remainingQuantity": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "supplier": { "type": "string" },
+        "description": { "type": "string" },
+        "type": { "type": "string", "enum": ["ENTRY", "PURCHASE"] },
+        "performedBy": { "type": "string" }
+      },
+      "required": ["id", "productId", "entryDate", "quantity", "remainingQuantity", "unitCost", "supplier"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "A record of stock movement.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "productId": { "type": "string" },
+        "type": { "type": "string", "enum": ["ENTRY", "EXIT", "PURCHASE", "SALE"] },
+        "quantity": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "salePrice": { "type": "number" },
+        "date": { "type": "string", "format": "date-time" },
+        "reference": { "type": "string" },
+        "performedBy": { "type": "string" },
+        "description": { "type": "string" },
+        "batchId": { "type": "string" }
+      },
+      "required": ["id", "productId", "type", "quantity", "unitCost", "date", "reference"]
+    },
+    "AuditEntry": {
+      "title": "Audit Entry",
+      "description": "System audit log record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "action": { "type": "string", "enum": ["CREATE", "UPDATE", "DELETE", "SYSTEM"] },
+        "entityType": { "type": "string", "enum": ["PRODUCT", "BATCH", "TRANSACTION", "TEAM", "CONFIG"] },
+        "entityId": { "type": "string" },
+        "details": { "type": "string" },
+        "previousValue": { "type": "string" },
+        "newValue": { "type": "string" }
+      },
+      "required": ["id", "timestamp", "userId", "userName", "action", "entityType", "entityId", "details"]
+    },
+    "AppNotification": {
+      "title": "App Notification",
+      "description": "User notification record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["LOW_STOCK", "SUCCESS", "INFO", "WARNING"] },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "read": { "type": "boolean" },
+        "linkTab": { "type": "string" },
+        "productId": { "type": "string" }
+      },
+      "required": ["id", "type", "title", "message", "timestamp", "read"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "Account",
+      "description": "User profile data."
+    },
+    "/companies/{companyId}": {
+      "schema": "Company",
+      "description": "Company profile and root for all company-related data."
+    },
+    "/companies/{companyId}/team/{memberId}": {
+      "schema": "TeamMember",
+      "description": "Team members belonging to a company."
+    },
+    "/companies/{companyId}/products/{productId}": {
+      "schema": "Product",
+      "description": "Products managed by the company."
+    },
+    "/companies/{companyId}/batches/{batchId}": {
+      "schema": "Batch",
+      "description": "Stock batches/entries for the company."
+    },
+    "/companies/{companyId}/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Stock transactions for the company."
+    },
+    "/companies/{companyId}/auditLogs/{logId}": {
+      "schema": "AuditEntry",
+      "description": "Audit trail for company actions."
+    },
+    "/companies/{companyId}/notifications/{notifId}": {
+      "schema": "AppNotification",
+      "description": "Notifications for the company."
+    }
+  }
+}

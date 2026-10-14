@@ -1,0 +1,6 @@
+{
+  "name": "DESTILERIA ORMON",
+  "description": "Sistema de gestión de inventario para destilerías utilizando el método PEPS (FIFO), con vistas para operadores y administradores, incluyendo tarjetas Kardex.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
