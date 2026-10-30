@@ -311,12 +311,31 @@ export function generateUnifiedKardex(
     const balance = productBalances[event.productId];
     if (!balance) return; // Skip if product doesn't exist anymore
 
+    let entryQty = 0;
+    let entryUnitCost = 0;
+    let entryTotal = 0;
+    let exitQty = 0;
+    let exitUnitCost = 0;
+    let exitTotal = 0;
+
     if (isEntry) {
-      balance.qty += event.qty;
-      balance.total += (event.qty * event.cost);
+      entryQty = event.qty;
+      entryUnitCost = event.cost;
+      entryTotal = event.qty * event.cost;
+
+      balance.qty += entryQty;
+      balance.total += entryTotal;
     } else {
-      balance.qty -= event.qty;
-      balance.total -= (event.qty * event.cost);
+      exitQty = event.qty;
+      // Costo promedio ponderado al momento de salida:
+      // Se determina dividiendo el saldo total valorado acumulado entre la cantidad en existencia antes de aplicar esta salida
+      const avgCostAtMomentOfExit = balance.qty > 0 ? (balance.total / balance.qty) : (event.cost || 0);
+
+      exitUnitCost = avgCostAtMomentOfExit;
+      exitTotal = exitQty * avgCostAtMomentOfExit;
+
+      balance.qty = Math.max(0, balance.qty - exitQty);
+      balance.total = Math.max(0, balance.total - exitTotal);
     }
 
     // Precise balance correction for zero/near-zero stock (Floating point guard)
@@ -327,7 +346,7 @@ export function generateUnifiedKardex(
       balance.total = 0;
     }
 
-    // The Balance Unit Cost in PEPS is the weighted average of the remaining layers
+    // Costo promedio ponderado del saldo restante
     const balanceUnitCost = balance.qty > 0 ? (balance.total / balance.qty) : 0;
     const productName = products.find(p => p.id === event.productId)?.name || 'Unknown';
 
@@ -338,12 +357,12 @@ export function generateUnifiedKardex(
       productId: event.productId,
       batchId: event.batchId,
       productName: productName,
-      entryQty: isEntry ? event.qty : 0,
-      entryUnitCost: isEntry ? event.cost : 0,
-      entryTotal: isEntry ? (event.qty * event.cost) : 0,
-      exitQty: !isEntry ? event.qty : 0,
-      exitUnitCost: !isEntry ? event.cost : 0,
-      exitTotal: !isEntry ? (event.qty * event.cost) : 0,
+      entryQty: isEntry ? entryQty : 0,
+      entryUnitCost: isEntry ? Number(entryUnitCost.toFixed(4)) : 0,
+      entryTotal: isEntry ? Number(entryTotal.toFixed(2)) : 0,
+      exitQty: !isEntry ? exitQty : 0,
+      exitUnitCost: !isEntry ? Number(exitUnitCost.toFixed(4)) : 0,
+      exitTotal: !isEntry ? Number(exitTotal.toFixed(2)) : 0,
       salePrice: (event as any).salePrice,
       balanceQty: Number(balance.qty.toFixed(4)),
       balanceUnitCost: Number(balanceUnitCost.toFixed(4)),

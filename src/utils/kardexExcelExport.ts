@@ -124,10 +124,10 @@ export function exportKardexWorkbook(
 
   const kardexSheetAOA: any[][] = [
     // Header Banner
-    [`${company.toUpperCase()} - SISTEMA DE CONTROL DE INVENTARIOS PEPS (FIFO)`],
+    [`${company.toUpperCase()} - SISTEMA DE CONTROL DE INVENTARIOS (COSTO PROMEDIO)`],
     [isSingleProduct 
       ? `TARJETA KARDEX INDIVIDUAL VALORADA - ${options.specificProduct?.name.toUpperCase()}${options.specificProduct?.type === 'producto terminado' ? ' (PRODUCTO TERMINADO)' : ''}`
-      : 'LIBRO TARJETA KARDEX VALORADO PEPS • PRODUCTOS TERMINADOS'],
+      : 'LIBRO TARJETA KARDEX VALORADO • COSTO PROMEDIO AL MOMENTO DE SALIDA'],
     [`Criterios del Reporte: ${filterText}`],
     [`Fecha y Hora de Emisión: ${emissionDateStr} | Responsable: ${user} | Registros: ${kardexEntries.length}`],
     [
@@ -140,8 +140,8 @@ export function exportKardexWorkbook(
     // Grouping Header Row (Row 6)
     [
       'DATOS DEL MOVIMIENTO', '', '', '', '',
-      'ENTRADAS / INGRESOS (PEPS)', '', '',
-      'SALIDAS / EGRESOS (PEPS)', '', '', '',
+      'ENTRADAS / INGRESOS (PRODUCCIÓN)', '', '',
+      'SALIDAS / EGRESOS (COSTO PROMEDIO)', '', '', '',
       'SALDOS VALORADOS EN EXISTENCIA', '', '',
       'AUDITORÍA'
     ],
@@ -157,11 +157,11 @@ export function exportKardexWorkbook(
       'Costo Unit. (Bs)',
       'Total Ingreso (Bs)',
       'Cantidad Salida',
-      'Costo Unit. PEPS (Bs)',
+      'Costo Promedio Salida (Bs)',
       'Total Salida (Bs)',
       'Precio Venta (Bs)',
       'Cantidad Saldo',
-      'Costo Unit. Valuado (Bs)',
+      'Costo Unit. Promedio (Bs)',
       'Total Saldo (Bs)',
       'Responsable'
     ]
@@ -250,7 +250,7 @@ export function exportKardexWorkbook(
     { wch: 18 }  // Responsable
   ];
 
-  XLSX.utils.book_append_sheet(workbook, kardexWorksheet, isSingleProduct ? 'Tarjeta Kardex' : 'Tarjeta Kardex PEPS');
+  XLSX.utils.book_append_sheet(workbook, kardexWorksheet, isSingleProduct ? 'Tarjeta Kardex' : 'Tarjeta Kardex');
 
   // ==========================================
   // 2. SHEET 2: RESUMEN DE INVENTARIO Y SALDOS
@@ -262,7 +262,7 @@ export function exportKardexWorkbook(
 
     const inventorySheetAOA: any[][] = [
       [`${company.toUpperCase()} - RESUMEN CONSOLIDADO DE INVENTARIO`],
-      [`Emisión: ${emissionDateStr} | Método de Valuación: PEPS (Primeros en Entrar, Primeros en Salir)`],
+      [`Emisión: ${emissionDateStr} | Método de Valuación: Costo Promedio al momento de salida`],
       [],
       [
         'Código / ID',
@@ -274,7 +274,7 @@ export function exportKardexWorkbook(
         'Existencia Actual',
         'Estado de Stock',
         'Valor Total en Inventario (Bs)',
-        'Costo Promedio PEPS (Bs)',
+        'Costo Promedio (Bs)',
         'Lotes Activos',
         'Total Entradas Históricas',
         'Total Salidas Históricas'
