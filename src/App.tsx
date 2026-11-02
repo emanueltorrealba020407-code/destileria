@@ -91,7 +91,13 @@ export default function App() {
   const [team, setTeam] = useState<TeamMember[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [productionOrders, setProductionOrders] = useState<ProductionOrderRecord[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
+  const [isSeedingData, setIsSeedingData] = useState(false);
+  const [availableCompanies, setAvailableCompanies] = useState<Array<{ id: string; name: string; productCount: number; batchCount: number }>>([]);
+
+  // Fallback to currentUser.id when company account or when linkedCompanyId is missing
+  const effectiveCompanyId = currentUser?.linkedCompanyId || (currentUser?.type === 'COMPANY' ? currentUser?.id : (currentUser?.id || ''));
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'inventory' | 'purchases' | 'sales' | 'kardex' | 'people' | 'configuration' | 'audit'>('dashboard');
   const [criticalThreshold, setCriticalThreshold] = useState(() => {
@@ -208,6 +214,10 @@ export default function App() {
         const email = firebaseUser.email || '';
         let profile = await dbService.getUserProfile(firebaseUser.uid);
 
+        // Fetch all existing companies in Firestore to enable workspace switching & auto-discovery
+        const allCompanies = await dbService.listCompaniesWithStats();
+        setAvailableCompanies(allCompanies);
+
         let matchingTeam = null;
         if (!profile || profile.type !== 'COMPANY') {
           matchingTeam = email ? await dbService.findTeamMemberByEmail(email) : null;
@@ -218,21 +228,27 @@ export default function App() {
           }
         }
 
+        // Find primary company with real saved data (e.g. "prueba" or "destilera")
+        const primaryCompanyWithData = allCompanies.find(c => c.productCount > 0);
+
         if (!profile) {
-          const companyId = matchingTeam ? matchingTeam.companyId : '';
-          const role = matchingTeam ? matchingTeam.member.role : 'OPERATOR';
-          const areas = matchingTeam ? matchingTeam.member.areas : [];
+          const companyId = matchingTeam 
+            ? matchingTeam.companyId 
+            : (primaryCompanyWithData ? primaryCompanyWithData.id : firebaseUser.uid);
+          const type: AccountType = matchingTeam ? 'USER' : 'COMPANY';
+          const role = matchingTeam ? matchingTeam.member.role : 'ADMIN';
+          const areas = matchingTeam ? matchingTeam.member.areas : ['INVENTARIO', 'PRODUCCION', 'REPORTES', 'CONFIGURACION'];
           
-          let companyName = 'Personal';
+          let companyName = primaryCompanyWithData ? primaryCompanyWithData.name : 'Mi Empresa';
           if (matchingTeam) {
             const comp = await dbService.getCompany(matchingTeam.companyId);
-            companyName = comp?.name || 'Empresa Vinculada';
+            companyName = comp?.name || companyName;
           }
 
           profile = {
             id: firebaseUser.uid,
-            type: 'USER',
-            name: firebaseUser.displayName || email.split('@')[0] || 'Usuario',
+            type: type,
+            name: firebaseUser.displayName || email.split('@')[0] || 'Administrador',
             email: email,
             companyName: companyName,
             linkedCompanyId: companyId,
@@ -240,40 +256,53 @@ export default function App() {
             areas: areas
           };
           await dbService.setUserProfile(profile);
+          if (type === 'COMPANY') {
+            await dbService.createCompany(firebaseUser.uid, companyName, firebaseUser.uid);
+          }
         } else {
-          if (profile.type === 'USER') {
+          // If profile exists, check if user's linkedCompanyId is empty or points to an empty company
+          // while existing companies have saved data
+          const currentLinkedId = profile.linkedCompanyId;
+          const currentHasProducts = currentLinkedId ? await dbService.hasCompanyProducts(currentLinkedId) : false;
+
+          if ((!currentLinkedId || !currentHasProducts) && primaryCompanyWithData) {
+            console.log('Connecting user to existing saved company:', primaryCompanyWithData.name, primaryCompanyWithData.id);
+            profile = {
+              ...profile,
+              linkedCompanyId: primaryCompanyWithData.id,
+              companyName: primaryCompanyWithData.name
+            };
+            await dbService.setUserProfile(profile);
+          } else if (profile.type === 'COMPANY') {
+            if (!profile.linkedCompanyId) {
+              profile = { ...profile, linkedCompanyId: profile.id };
+              await dbService.setUserProfile(profile);
+            }
+          } else if (profile.type === 'USER') {
             const currentEmail = firebaseUser.email || profile.email;
             const currentTeam = await dbService.findTeamMemberByEmail(currentEmail);
             if (currentTeam) {
               const comp = await dbService.getCompany(currentTeam.companyId);
-              const companyName = comp?.name || 'Empresa Vinculada';
+              const companyName = comp?.name || profile.companyName;
               
-              const arraysEqual = (a: any[], b: any[]) => {
-                if (a.length !== b.length) return false;
-                const sortedA = [...a].sort();
-                const sortedB = [...b].sort();
-                return sortedA.every((val, index) => val === sortedB[index]);
-              };
-
               if (
                 profile.linkedCompanyId !== currentTeam.companyId ||
                 profile.role !== currentTeam.member.role ||
-                !arraysEqual(profile.areas || [], currentTeam.member.areas || []) ||
                 profile.companyName !== companyName
               ) {
-                const updatedProfile = {
+                profile = {
                   ...profile,
                   linkedCompanyId: currentTeam.companyId,
                   role: currentTeam.member.role,
                   areas: currentTeam.member.areas,
                   companyName: companyName
                 };
-                await dbService.setUserProfile(updatedProfile);
-                profile = updatedProfile;
+                await dbService.setUserProfile(profile);
               }
             }
           }
         }
+
         setCurrentUser(profile);
         localStorage.setItem('sied_current_user', JSON.stringify(profile));
         localStorage.removeItem('sied_explicit_logout');
@@ -293,31 +322,43 @@ export default function App() {
     return () => unsub();
   }, []);
 
-  // --- FIREBASE DATA LISTENERS ---
+  const handleSwitchCompany = async (companyId: string, companyName: string) => {
+    if (!currentUser) return;
+    const updatedProfile: Account = {
+      ...currentUser,
+      linkedCompanyId: companyId,
+      companyName: companyName
+    };
+    setCurrentUser(updatedProfile);
+    localStorage.setItem('sied_current_user', JSON.stringify(updatedProfile));
+    await dbService.setUserProfile(updatedProfile);
+  };
+
+  // --- FIREBASE DATA LISTENERS (REAL-TIME ALL COLLECTIONS) ---
   useEffect(() => {
-    if (!currentUser?.linkedCompanyId) {
+    if (!effectiveCompanyId) {
       setProducts([]);
       setBatches([]);
       setTransactions([]);
+      setProductionOrders([]);
       setTeam([]);
       setAuditLogs([]);
       setNotifications([]);
       return;
     }
 
-    const companyId = currentUser.linkedCompanyId;
-
     const unsubs = [
-      dbService.subscribeToCollection<Product>(companyId, 'products', setProducts),
-      dbService.subscribeToCollection<Batch>(companyId, 'batches', setBatches),
-      dbService.subscribeToCollection<Transaction>(companyId, 'transactions', setTransactions),
-      dbService.subscribeToCollection<TeamMember>(companyId, 'team', setTeam),
-      dbService.subscribeToCollection<AuditEntry>(companyId, 'auditLogs', setAuditLogs),
-      dbService.subscribeToCollection<AppNotification>(companyId, 'notifications', setNotifications),
+      dbService.subscribeToCollection<Product>(effectiveCompanyId, 'products', setProducts),
+      dbService.subscribeToCollection<Batch>(effectiveCompanyId, 'batches', setBatches),
+      dbService.subscribeToCollection<Transaction>(effectiveCompanyId, 'transactions', setTransactions),
+      dbService.subscribeToCollection<ProductionOrderRecord>(effectiveCompanyId, 'productionOrders', setProductionOrders),
+      dbService.subscribeToCollection<TeamMember>(effectiveCompanyId, 'team', setTeam),
+      dbService.subscribeToCollection<AuditEntry>(effectiveCompanyId, 'auditLogs', setAuditLogs),
+      dbService.subscribeToCollection<AppNotification>(effectiveCompanyId, 'notifications', setNotifications),
     ];
 
     return () => unsubs.forEach(unsub => unsub());
-  }, [currentUser?.linkedCompanyId]);
+  }, [effectiveCompanyId]);
 
   // --- REAL-TIME TEAM MEMBER STATUS & ACCESS SYNC ---
   useEffect(() => {
@@ -360,29 +401,61 @@ export default function App() {
   }, [team, currentUser]);
 
   const addNotification = async (notif: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) => {
-    if (!currentUser?.linkedCompanyId) return;
+    if (!effectiveCompanyId) return;
     const newNotif: AppNotification = {
       ...notif,
       id: Math.random().toString(36).substr(2, 9),
       timestamp: new Date().toISOString(),
       read: false
     };
-    await dbService.saveNotification(currentUser.linkedCompanyId, newNotif);
+    await dbService.saveNotification(effectiveCompanyId, newNotif);
     addToast(notif);
   };
 
   const markAsRead = async (id: string) => {
-    if (!currentUser?.linkedCompanyId) return;
+    if (!effectiveCompanyId) return;
     const notif = notifications.find(n => n.id === id);
     if (notif) {
-      await dbService.saveNotification(currentUser.linkedCompanyId, { ...notif, read: true });
+      await dbService.saveNotification(effectiveCompanyId, { ...notif, read: true });
     }
   };
 
   const clearNotifications = async () => {
-    if (!currentUser?.linkedCompanyId) return;
+    if (!effectiveCompanyId) return;
     for (const n of notifications) {
-      await dbService.deleteItem(currentUser.linkedCompanyId, 'notifications', n.id);
+      await dbService.deleteItem(effectiveCompanyId, 'notifications', n.id);
+    }
+  };
+
+  const handleSeedSystemData = async () => {
+    if (!effectiveCompanyId) {
+      alert('No se detectó un identificador de empresa válido.');
+      return;
+    }
+    const confirmSeed = window.confirm(
+      '¿Desea cargar los productos y datos de demostración de "Destilería Ormón" en esta empresa?\n\n' +
+      'NOTA: Sus productos y lotes existentes NO serán eliminados, pero se agregarán los productos de demostración al inventario.'
+    );
+    if (!confirmSeed) return;
+    setIsSeedingData(true);
+    try {
+      await dbService.seedDefaultCompanyData(
+        effectiveCompanyId,
+        currentUser?.companyName || 'DESTILERÍA ORMÓN',
+        currentUser?.name || 'Administrador'
+      );
+      addNotification({
+        type: 'SUCCESS',
+        title: 'Base de Datos Sincronizada',
+        message: 'Se cargaron todas las materias primas, insumos, productos terminados (recetas y empaques) y movimientos al Kardex.',
+        linkTab: 'inventory'
+      });
+      alert('¡Base de datos cargada con éxito! Se sincronizaron los productos, inventario, recetas y movimientos de Kardex.');
+    } catch (err) {
+      console.error('Error al sincronizar datos del sistema:', err);
+      alert('Error al poblar la base de datos: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsSeedingData(false);
     }
   };
 
@@ -832,8 +905,8 @@ export default function App() {
         ? productPackaging
         : undefined
     };
-    if (currentUser?.linkedCompanyId) {
-      dbService.saveProduct(currentUser.linkedCompanyId, newProduct);
+    if (effectiveCompanyId) {
+      dbService.saveProduct(effectiveCompanyId, newProduct);
     }
     addAuditLog('CREATE', 'PRODUCT', newProduct.id, `Producto creado: ${newProduct.name} (${newProduct.type})`, null, newProduct);
     addNotification({
@@ -877,8 +950,8 @@ export default function App() {
       performedBy: currentUser?.name || currentUser?.email || 'Sistema'
     };
 
-    if (currentUser?.linkedCompanyId) {
-      dbService.saveBatch(currentUser.linkedCompanyId, newBatch);
+    if (effectiveCompanyId) {
+      dbService.saveBatch(effectiveCompanyId, newBatch);
     }
     addAuditLog('CREATE', 'BATCH', newBatch.id, `Entrada manual: ${newBatch.quantity} unidades para ${products.find(p => p.id === selectedProductId)?.name}`, null, newBatch);
     setShowModal(null);
@@ -1031,16 +1104,16 @@ export default function App() {
         allNewTransactions.push(...newTx);
       }
 
-      if (currentUser?.linkedCompanyId) {
+      if (effectiveCompanyId) {
         // Save all updated batches and new transactions
         currentBatches
           .filter(b => {
             const oldB = batches.find(ob => ob.id === b.id);
             return oldB && oldB.remainingQuantity !== b.remainingQuantity;
           })
-          .forEach(b => dbService.saveBatch(currentUser.linkedCompanyId!, b));
+          .forEach(b => dbService.saveBatch(effectiveCompanyId, b));
 
-        allNewTransactions.forEach(tx => dbService.saveTransaction(currentUser.linkedCompanyId!, tx));
+        allNewTransactions.forEach(tx => dbService.saveTransaction(effectiveCompanyId, tx));
       }
 
       const isSale = pendingTransactionData.type === 'SALE';
@@ -1177,8 +1250,8 @@ export default function App() {
       performedBy: currentUser?.name || currentUser?.email || 'Sistema'
     }));
 
-    if (currentUser?.linkedCompanyId) {
-      newBatches.forEach(nb => dbService.saveBatch(currentUser.linkedCompanyId!, nb));
+    if (effectiveCompanyId) {
+      newBatches.forEach(nb => dbService.saveBatch(effectiveCompanyId, nb));
     }
     
     addNotification({
@@ -1212,7 +1285,7 @@ export default function App() {
 
   const handleEditBatch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedBatchId || !currentUser?.linkedCompanyId) return;
+    if (!selectedBatchId || !effectiveCompanyId) return;
 
     const prevBatch = batches.find(b => b.id === selectedBatchId);
     if (prevBatch) {
@@ -1228,7 +1301,7 @@ export default function App() {
           description: formData.productDescription,
           performedBy: currentUser?.name || currentUser?.email || 'Sistema'
         };
-        dbService.saveBatch(currentUser.linkedCompanyId, updatedBatch);
+        dbService.saveBatch(effectiveCompanyId, updatedBatch);
         addAuditLog('UPDATE', 'BATCH', prevBatch.id, `Lote editado manualmente: ${prevBatch.id.slice(0, 8)} (Stock restante: ${newRemaining})`, prevBatch, updatedBatch);
     }
 
@@ -1331,14 +1404,13 @@ export default function App() {
   };
 
   const confirmDeleteProduct = () => {
-    if (productToDelete && currentUser?.linkedCompanyId) {
+    if (productToDelete && effectiveCompanyId) {
       addAuditLog('DELETE', 'PRODUCT', productToDelete.id, `Producto eliminado: ${productToDelete.name}`, productToDelete, null);
-      dbService.deleteItem(currentUser.linkedCompanyId, 'products', productToDelete.id);
+      dbService.deleteItem(effectiveCompanyId, 'products', productToDelete.id);
       
-      // Also delete associated batches and transactions for this product? 
-      // Typically in ERP systems we just mark as inactive, but here we do simple delete
-      batches.filter(b => b.productId === productToDelete.id).forEach(b => dbService.deleteItem(currentUser.linkedCompanyId!, 'batches', b.id));
-      transactions.filter(t => t.productId === productToDelete.id).forEach(t => dbService.deleteItem(currentUser.linkedCompanyId!, 'transactions', t.id));
+      // Also delete associated batches and transactions for this product
+      batches.filter(b => b.productId === productToDelete.id).forEach(b => dbService.deleteItem(effectiveCompanyId, 'batches', b.id));
+      transactions.filter(t => t.productId === productToDelete.id).forEach(t => dbService.deleteItem(effectiveCompanyId, 'transactions', t.id));
       
       setProductToDelete(null);
     }
@@ -1360,7 +1432,7 @@ export default function App() {
 
   const handleSaveEditProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!productToEdit || !currentUser?.linkedCompanyId) return;
+    if (!productToEdit || !effectiveCompanyId) return;
 
     const previousProduct = { ...productToEdit };
     const hasRecipe = (editProductForm.type === 'producto terminado' || editProductForm.type === 'producción') && editProductForm.recipe.length > 0;
@@ -1378,7 +1450,7 @@ export default function App() {
       packaging: hasPackaging ? editProductForm.packaging : undefined
     };
 
-    await dbService.saveProduct(currentUser.linkedCompanyId, updatedProduct);
+    await dbService.saveProduct(effectiveCompanyId, updatedProduct);
 
     // Immediate UI feedback
     setProducts(prev => prev.map(p => p.id === updatedProduct.id ? updatedProduct : p));
@@ -1405,7 +1477,7 @@ export default function App() {
 
   const handleExecuteProductionOrder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentUser?.linkedCompanyId) return;
+    if (!effectiveCompanyId) return;
 
     const finishedProduct = products.find(p => p.id === produceForm.productId);
     if (!finishedProduct) {
@@ -1461,7 +1533,7 @@ export default function App() {
     const productionTransactions: Transaction[] = [];
 
     const prodDate = produceForm.productionDate || new Date().toISOString().split('T')[0];
-    const companyId = currentUser.linkedCompanyId;
+    const companyId = effectiveCompanyId;
 
     for (const item of recipe) {
       const requiredQty = item.quantityNeeded * totalUnits;
@@ -1591,13 +1663,13 @@ export default function App() {
 
   const handlePeopleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPerson.name || !newPerson.email || !currentUser?.linkedCompanyId) return;
+    if (!newPerson.name || !newPerson.email || !effectiveCompanyId) return;
 
     if (newPerson.id) {
       // Edit mode
       const prev = team.find(t => t.id === newPerson.id);
       const updated = { ...prev, ...newPerson, email: newPerson.email?.trim().toLowerCase() } as TeamMember;
-      dbService.saveTeamMember(currentUser.linkedCompanyId, updated);
+      dbService.saveTeamMember(effectiveCompanyId, updated);
       addAuditLog('UPDATE', 'TEAM', newPerson.id, `Colaborador actualizado: ${newPerson.name}`, prev, updated);
     } else {
       // Create mode
@@ -1609,7 +1681,7 @@ export default function App() {
         areas: (newPerson.areas || []) as AreaPermission[],
         status: (newPerson.status || 'active') as 'active' | 'inactive'
       };
-      dbService.saveTeamMember(currentUser.linkedCompanyId, person);
+      dbService.saveTeamMember(effectiveCompanyId, person);
       addAuditLog('CREATE', 'TEAM', person.id, `Nuevo colaborador añadido: ${person.name}`, null, person);
     }
 
@@ -1664,9 +1736,9 @@ export default function App() {
       performedBy: currentUser?.name || currentUser?.email || 'Sistema'
     };
 
-    if (currentUser?.linkedCompanyId) {
-      selectedPurchases.forEach(id => dbService.deleteItem(currentUser.linkedCompanyId!, 'batches', id));
-      dbService.saveBatch(currentUser.linkedCompanyId, consolidatedBatch);
+    if (effectiveCompanyId) {
+      selectedPurchases.forEach(id => dbService.deleteItem(effectiveCompanyId, 'batches', id));
+      dbService.saveBatch(effectiveCompanyId, consolidatedBatch);
     }
 
     addAuditLog('SYSTEM', 'BATCH', consolidatedBatch.id, `Compras consolidadas (${selectedBatches.length} registros) para el producto ${products.find(p => p.id === firstProduct)?.name}`);
@@ -2291,16 +2363,39 @@ export default function App() {
   return (
     <div className="flex h-screen bg-main text-main font-inter selection:bg-accent selection:text-white overflow-hidden">
       {/* Mobile Top Bar */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-sidebar border-b border-main flex items-center justify-between px-6 z-50">
+      <div className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-sidebar border-b border-main flex items-center justify-between px-4 z-50">
         <div className="flex items-center gap-3">
           <Menu 
             className="text-accent cursor-pointer active:scale-95 transition-transform" 
             onClick={() => setIsSidebarOpen(true)}
             size={24}
           />
-          <h1 className="font-black text-sm tracking-widest text-accent uppercase">{companyName || 'SIED'}</h1>
+          <div className="flex flex-col">
+            <h1 className="font-black text-xs tracking-wider text-accent uppercase leading-none">{companyName || 'SIED'}</h1>
+            {availableCompanies.length > 1 && (
+              <select
+                value={effectiveCompanyId}
+                onChange={(e) => {
+                  const selected = availableCompanies.find(c => c.id === e.target.value);
+                  if (selected) {
+                    handleSwitchCompany(selected.id, selected.name);
+                  }
+                }}
+                className="bg-transparent text-[10px] font-bold text-muted outline-none cursor-pointer mt-0.5"
+              >
+                {availableCompanies.map(c => (
+                  <option key={c.id} value={c.id} className="bg-neutral-900 text-white">
+                    {c.name} ({c.productCount} prod.)
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          <div className="text-[10px] font-bold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+            {products.length} prod.
+          </div>
           <button 
             onClick={() => setShowNotifications(!showNotifications)}
             className="relative p-2 text-muted hover:text-accent transition-colors"
@@ -2411,11 +2506,44 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto pt-24 lg:pt-0 transition-all flex flex-col h-full">
         {/* Desktop Top Bar */}
-        <div className="hidden lg:flex sticky top-0 bg-main/80 backdrop-blur-md px-12 py-6 items-center justify-between z-40 border-b border-main/5">
-          <div className="flex items-center gap-3">
-            <h2 className="text-xs font-black uppercase text-muted tracking-[0.2em]">Dashboard</h2>
-            <ChevronRight size={12} className="text-muted/30" />
-            <span className="text-xs font-black uppercase text-accent tracking-[0.2em]">{activeTab}</span>
+        <div className="hidden lg:flex sticky top-0 bg-main/80 backdrop-blur-md px-12 py-5 items-center justify-between z-40 border-b border-main/5">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <h2 className="text-xs font-black uppercase text-muted tracking-[0.2em]">Dashboard</h2>
+              <ChevronRight size={12} className="text-muted/30" />
+              <span className="text-xs font-black uppercase text-accent tracking-[0.2em]">{activeTab}</span>
+            </div>
+
+            {/* Company / Workspace Switcher */}
+            {availableCompanies.length > 0 && (
+              <div className="flex items-center gap-2 bg-sidebar border border-main px-3 py-1.5 rounded-xl ml-4">
+                <Building2 size={16} className="text-accent" />
+                <div className="flex flex-col">
+                  <span className="text-[8px] font-black uppercase tracking-widest text-muted">Empresa / Base de Datos</span>
+                  <select
+                    value={effectiveCompanyId}
+                    onChange={(e) => {
+                      const selected = availableCompanies.find(c => c.id === e.target.value);
+                      if (selected) {
+                        handleSwitchCompany(selected.id, selected.name);
+                      }
+                    }}
+                    className="bg-transparent text-xs font-black uppercase text-accent outline-none cursor-pointer tracking-wider"
+                  >
+                    {availableCompanies.map(c => (
+                      <option key={c.id} value={c.id} className="bg-neutral-900 text-white font-bold">
+                        {c.name} ({c.productCount} {c.productCount === 1 ? 'producto' : 'productos'}, {c.batchCount} lotes)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            <div className="hidden xl:flex items-center gap-2 px-3 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 text-[10px] font-bold">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span>Firebase Conectado • {products.length} productos • {batches.length} lotes</span>
+            </div>
           </div>
           <div className="flex items-center gap-6">
             <button 
@@ -2737,8 +2865,15 @@ export default function App() {
             >
               <header className="flex flex-col md:flex-row justify-between items-start md:items-center bg-sidebar p-6 rounded-2xl border border-main shadow-sm mb-8 gap-6">
                 <div>
-                  <h2 className="text-2xl md:text-3xl font-black uppercase tracking-tighter">Operaciones de Planta</h2>
-                  <p className="text-muted text-[10px] md:text-xs uppercase tracking-widest font-bold mt-1">Gestión Central de Almacén</p>
+                  <div className="flex items-center gap-3">
+                    <h2 className="text-2xl md:text-3xl font-black uppercase tracking-tighter">Operaciones de Planta</h2>
+                    <span className="bg-accent/10 text-accent border border-accent/20 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-widest">
+                      {companyName || 'Empresa'}
+                    </span>
+                  </div>
+                  <p className="text-muted text-[10px] md:text-xs uppercase tracking-widest font-bold mt-1">
+                    Gestión Central de Almacén • {products.length} productos registrados • {batches.length} lotes en Firebase
+                  </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
                   <button 
@@ -2797,6 +2932,15 @@ export default function App() {
                       <Plus size={16} /> Nuevo Producto
                     </button>
                   )}
+                  <button 
+                    onClick={handleSeedSystemData}
+                    disabled={isSeedingData}
+                    className="flex-1 md:flex-initial bg-sidebar border border-muted/30 text-muted hover:text-accent hover:border-accent/40 px-4 py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all text-[10px] md:text-xs uppercase tracking-widest shadow-sm disabled:opacity-50"
+                    title="Cargar productos de demostración de Destilería Ormón (Opcional)"
+                  >
+                    <Sparkles size={16} className={isSeedingData ? 'animate-spin' : ''} />
+                    <span>{isSeedingData ? 'Cargando Demo...' : 'Catálogo Demo'}</span>
+                  </button>
                 </div>
               </header>
 
@@ -3104,6 +3248,71 @@ export default function App() {
                     </div>
                   </div>
                 ))}
+
+                {products.length === 0 && (
+                  <div className="col-span-full py-16 px-8 text-center bg-sidebar rounded-[2.5rem] border-2 border-dashed border-main/30 flex flex-col items-center justify-center space-y-6">
+                    <div className="w-16 h-16 rounded-3xl bg-accent/10 text-accent flex items-center justify-center">
+                      <Warehouse size={32} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black uppercase tracking-tight text-main mb-1">
+                        Empresa actual sin productos registrados
+                      </h3>
+                      <p className="text-xs text-muted font-bold max-w-md mx-auto uppercase tracking-wider leading-relaxed">
+                        Esta empresa no tiene productos guardados. Si guardó sus productos en otra empresa o cuenta, puede cambiar inmediatamente:
+                      </p>
+                    </div>
+
+                    {/* Quick switch to existing companies with products */}
+                    {availableCompanies.filter(c => c.productCount > 0 && c.id !== effectiveCompanyId).length > 0 && (
+                      <div className="w-full max-w-md p-4 bg-accent/5 border border-accent/20 rounded-2xl text-left space-y-3">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-accent block">
+                          Empresas con datos guardados disponibles:
+                        </span>
+                        <div className="space-y-2">
+                          {availableCompanies
+                            .filter(c => c.productCount > 0 && c.id !== effectiveCompanyId)
+                            .map(c => (
+                              <button
+                                key={c.id}
+                                onClick={() => handleSwitchCompany(c.id, c.name)}
+                                className="w-full flex items-center justify-between p-3 rounded-xl bg-card border border-main hover:border-accent transition-all text-xs font-bold"
+                              >
+                                <span className="font-black uppercase tracking-wider text-main">{c.name}</span>
+                                <span className="text-accent text-[10px] font-black uppercase">
+                                  {c.productCount} {c.productCount === 1 ? 'producto' : 'productos'} • {c.batchCount} lotes →
+                                </span>
+                              </button>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center justify-center gap-3">
+                      <button
+                        onClick={() => { 
+                          setProductRecipe([]);
+                          setProductPackaging({ packagingType: 'ninguno', unitsPerBox: 0, unitsPerBundle: 0 });
+                          setShowModal('product'); 
+                          setFormData({ quantity: 0, cost: 0, minStock: 0, supplier: '', name: '', description: '', category: '', unit: 'unidad', type: 'producto terminado', productDescription: '', entryDate: new Date().toISOString().split('T')[0] }); 
+                        }}
+                        className="flex items-center gap-2 px-6 py-3.5 bg-accent text-white rounded-xl font-black uppercase text-xs tracking-widest hover:brightness-110 active:scale-95 transition-all shadow-lg shadow-brand-gold-shadow"
+                      >
+                        <Plus size={16} />
+                        <span>Crear Producto</span>
+                      </button>
+
+                      <button
+                        onClick={handleSeedSystemData}
+                        disabled={isSeedingData}
+                        className="flex items-center gap-2 px-5 py-3.5 bg-sidebar border border-muted/30 text-muted hover:text-accent hover:border-accent/40 rounded-xl font-bold uppercase text-xs tracking-widest transition-all disabled:opacity-50"
+                      >
+                        <Sparkles size={16} className={isSeedingData ? 'animate-spin' : ''} />
+                        <span>{isSeedingData ? 'Cargando Demo...' : 'Cargar Catálogo Demo'}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </motion.div>
           )}
@@ -4151,6 +4360,97 @@ export default function App() {
                         <span>ALTA SENSIBILIDAD (80%)</span>
                       </div>
                    </div>
+                </div>
+
+                <div className="pt-10 border-t border-main/10">
+                   <div className="flex items-center gap-3 mb-4">
+                      <Warehouse className="text-accent" size={20} />
+                      <h3 className="text-base font-black uppercase tracking-tight">Base de Datos del Sistema (Cloud Firestore)</h3>
+                   </div>
+                   <p className="text-[11px] text-muted font-bold uppercase tracking-widest leading-relaxed mb-6">
+                     Persistencia de datos en la nube: materias primas, insumos, productos terminados, recetas de producción, empaques, lotes y movimientos de Kardex.
+                   </p>
+                   
+                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+                      <div className="bg-main/5 p-4 rounded-2xl border border-main/10">
+                        <span className="text-[9px] font-black uppercase text-muted block mb-1">Productos</span>
+                        <span className="text-xl font-black text-accent">{products.length}</span>
+                      </div>
+                      <div className="bg-main/5 p-4 rounded-2xl border border-main/10">
+                        <span className="text-[9px] font-black uppercase text-muted block mb-1">Lotes Activos</span>
+                        <span className="text-xl font-black text-main">{batches.length}</span>
+                      </div>
+                      <div className="bg-main/5 p-4 rounded-2xl border border-main/10">
+                        <span className="text-[9px] font-black uppercase text-muted block mb-1">Transacciones</span>
+                        <span className="text-xl font-black text-emerald-500">{transactions.length}</span>
+                      </div>
+                      <div className="bg-main/5 p-4 rounded-2xl border border-main/10">
+                        <span className="text-[9px] font-black uppercase text-muted block mb-1">Órdenes Prod.</span>
+                        <span className="text-xl font-black text-indigo-500">{productionOrders.length}</span>
+                      </div>
+                   </div>
+
+                   <div className="bg-main/5 p-6 rounded-2xl border border-main/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                      <div>
+                         <div className="text-[10px] font-black uppercase tracking-widest text-muted mb-1">Estado de Conexión</div>
+                         <div className="flex items-center gap-2">
+                            <div className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse shadow-lg shadow-green-500/20" />
+                            <span className="text-xs font-black text-main uppercase">
+                              En Tiempo Real ({currentUser?.companyName || 'Empresa Activa'})
+                            </span>
+                         </div>
+                      </div>
+
+                      <button
+                        onClick={handleSeedSystemData}
+                        disabled={isSeedingData}
+                        className="w-full sm:w-auto flex items-center justify-center gap-2 bg-accent text-white px-6 py-3 rounded-xl font-black uppercase text-[10px] tracking-widest hover:brightness-110 active:scale-95 transition-all shadow-lg shadow-brand-gold-shadow disabled:opacity-50"
+                      >
+                        <Sparkles size={14} className={isSeedingData ? 'animate-spin' : ''} />
+                        <span>{isSeedingData ? 'Cargando Base de Datos...' : 'Cargar Datos Demo de Prueba'}</span>
+                      </button>
+                   </div>
+
+                   {availableCompanies.length > 0 && (
+                     <div className="bg-main/5 p-6 rounded-2xl border border-main/10 mt-6 space-y-4">
+                       <div className="flex items-center justify-between">
+                         <div className="flex items-center gap-2">
+                           <Building2 size={16} className="text-accent" />
+                           <span className="text-[10px] font-black uppercase tracking-widest text-muted">
+                             Espacios de Trabajo en la Base de Datos ({availableCompanies.length})
+                           </span>
+                         </div>
+                       </div>
+                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                         {availableCompanies.map(comp => (
+                           <button
+                             key={comp.id}
+                             onClick={() => handleSwitchCompany(comp.id, comp.name)}
+                             className={cn(
+                               "p-4 rounded-xl border text-left transition-all flex flex-col justify-between group",
+                               comp.id === effectiveCompanyId
+                                 ? "bg-accent/15 border-accent text-accent shadow-sm"
+                                 : "bg-card border-main hover:border-accent/40 text-main"
+                             )}
+                           >
+                             <div className="flex items-center justify-between mb-2">
+                               <span className="font-black text-sm uppercase tracking-wide truncate">{comp.name}</span>
+                               {comp.id === effectiveCompanyId && (
+                                 <span className="text-[8px] font-black uppercase bg-accent text-white px-2 py-0.5 rounded-full">
+                                   Activa
+                                 </span>
+                               )}
+                             </div>
+                             <div className="text-[10px] text-muted font-bold uppercase tracking-wider flex items-center gap-2">
+                               <span>{comp.productCount} {comp.productCount === 1 ? 'producto' : 'productos'}</span>
+                               <span>•</span>
+                               <span>{comp.batchCount} lotes</span>
+                             </div>
+                           </button>
+                         ))}
+                       </div>
+                     </div>
+                   )}
                 </div>
 
                 <div className="pt-10 border-t border-main/10">
