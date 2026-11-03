@@ -151,7 +151,14 @@ export const dbService = {
     try {
       await deleteDoc(doc(db, path, itemId));
     } catch (e) {
+      console.warn(`Error al eliminar de ${path}/${itemId}:`, e);
       handleFirestoreError(e, OperationType.DELETE, `${path}/${itemId}`);
+    }
+    // Also defensively check and delete from root collection if it exists there
+    try {
+      await deleteDoc(doc(db, subPath, itemId));
+    } catch {
+      // Ignore root collection errors
     }
   },
 

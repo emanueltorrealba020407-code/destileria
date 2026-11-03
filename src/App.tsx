@@ -45,7 +45,8 @@ import {
   Factory,
   PackageCheck,
   Layers,
-  Sparkles
+  Sparkles,
+  TrendingUp
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -184,6 +185,35 @@ export default function App() {
   const [kardexPresentationMode, setKardexPresentationMode] = useState(false);
   const [batchToEdit, setBatchToEdit] = useState<Batch | null>(null);
   const [editBatchData, setEditBatchData] = useState({ quantity: 0, cost: 0, reference: '' });
+  
+  // Edit purchase state
+  const [purchaseToEdit, setPurchaseToEdit] = useState<Batch | null>(null);
+  const [editPurchaseForm, setEditPurchaseForm] = useState({
+    quantity: 0,
+    unitCost: 0,
+    supplier: '',
+    entryDate: '',
+    description: ''
+  });
+
+  // Edit sale state
+  const [saleToEdit, setSaleToEdit] = useState<Transaction | null>(null);
+  const [editSaleForm, setEditSaleForm] = useState({
+    quantity: 0,
+    salePrice: 0,
+    date: '',
+    reference: '',
+    description: ''
+  });
+
+  // Delete purchase state & modal
+  const [purchaseToDelete, setPurchaseToDelete] = useState<Batch | null>(null);
+  const [bulkPurchasesToDelete, setBulkPurchasesToDelete] = useState<Batch[] | null>(null);
+
+  // Delete sale state & modal
+  const [saleToDelete, setSaleToDelete] = useState<Transaction | null>(null);
+  const [isDeletingMovement, setIsDeletingMovement] = useState(false);
+
   const [selectedPurchases, setSelectedPurchases] = useState<string[]>([]);
   const [purchaseItems, setPurchaseItems] = useState<{ productId: string; quantity: number; cost: number; productName: string }[]>([]);
   const [saleItems, setSaleItems] = useState<{ productId: string; quantity: number; salePrice: number; productName: string }[]>([]);
@@ -504,6 +534,54 @@ export default function App() {
       })
       .sort((a, b) => new Date(b.entryDate).getTime() - new Date(a.entryDate).getTime());
   }, [batches, products, purchaseFilterSupplier, purchaseFilterStartDate, purchaseFilterEndDate]);
+
+  // Sales Filters & Metrics
+  const [saleFilterSearch, setSaleFilterSearch] = useState('');
+  const [saleFilterStartDate, setSaleFilterStartDate] = useState('');
+  const [saleFilterEndDate, setSaleFilterEndDate] = useState('');
+
+  const filteredSaleReports = useMemo(() => {
+    return transactions
+      .filter(t => t.type === 'SALE')
+      .filter(t => {
+        const product = products.find(p => p.id === t.productId);
+        const searchLower = saleFilterSearch.toLowerCase();
+        const matchesSearch = !saleFilterSearch ||
+          (product?.name || '').toLowerCase().includes(searchLower) ||
+          (product?.category || '').toLowerCase().includes(searchLower) ||
+          (t.reference || '').toLowerCase().includes(searchLower) ||
+          (t.description || '').toLowerCase().includes(searchLower) ||
+          (t.performedBy || '').toLowerCase().includes(searchLower);
+
+        let dateMatch = true;
+        if (saleFilterStartDate) {
+          dateMatch = dateMatch && new Date(t.date) >= new Date(saleFilterStartDate);
+        }
+        if (saleFilterEndDate) {
+          const end = new Date(saleFilterEndDate);
+          end.setHours(23, 59, 59, 999);
+          dateMatch = dateMatch && new Date(t.date) <= end;
+        }
+
+        return matchesSearch && dateMatch;
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [transactions, products, saleFilterSearch, saleFilterStartDate, saleFilterEndDate]);
+
+  const salesSummary = useMemo(() => {
+    let totalRevenue = 0;
+    let totalCogs = 0;
+    let totalUnits = 0;
+    filteredSaleReports.forEach(s => {
+      const unitSalePrice = s.salePrice || s.unitCost || 0;
+      totalRevenue += s.quantity * unitSalePrice;
+      totalCogs += s.quantity * s.unitCost;
+      totalUnits += s.quantity;
+    });
+    const grossProfit = totalRevenue - totalCogs;
+    const profitMargin = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
+    return { totalRevenue, totalCogs, totalUnits, grossProfit, profitMargin };
+  }, [filteredSaleReports]);
 
   const filteredTeam = useMemo(() => {
     return team
@@ -937,10 +1015,15 @@ export default function App() {
     e.preventDefault();
     if (!selectedProductId) return;
 
+    const nowTime = new Date().toTimeString().split(' ')[0];
+    const resolvedEntryDate = formData.entryDate
+      ? (formData.entryDate.includes('T') ? formData.entryDate : `${formData.entryDate}T${nowTime}`)
+      : new Date().toISOString();
+
     const newBatch: Batch = {
       id: crypto.randomUUID(),
       productId: selectedProductId,
-      entryDate: new Date().toISOString(),
+      entryDate: resolvedEntryDate,
       quantity: formData.quantity,
       remainingQuantity: formData.quantity,
       unitCost: formData.cost,
@@ -953,18 +1036,20 @@ export default function App() {
     if (effectiveCompanyId) {
       dbService.saveBatch(effectiveCompanyId, newBatch);
     }
-    addAuditLog('CREATE', 'BATCH', newBatch.id, `Entrada manual: ${newBatch.quantity} unidades para ${products.find(p => p.id === selectedProductId)?.name}`, null, newBatch);
+    addAuditLog('CREATE', 'BATCH', newBatch.id, `Entrada manual (${format(new Date(resolvedEntryDate), 'dd/MM/yyyy')}): ${newBatch.quantity} unidades para ${products.find(p => p.id === selectedProductId)?.name}`, null, newBatch);
     setShowModal(null);
     setFormData({ 
       quantity: 0, 
       cost: 0, 
+      minStock: 0,
       supplier: '', 
       name: '', 
       description: '', 
       category: '', 
       unit: 'litro',
       type: 'materia prima',
-      productDescription: ''
+      productDescription: '',
+      entryDate: new Date().toISOString().split('T')[0]
     });
   };
 
@@ -1035,11 +1120,16 @@ export default function App() {
       return;
     }
 
+    const nowTime = new Date().toTimeString().split(' ')[0];
+    const resolvedMovementDate = formData.entryDate 
+      ? (formData.entryDate.includes('T') ? formData.entryDate : `${formData.entryDate}T${nowTime}`)
+      : new Date().toISOString();
+
     setPendingTransactionData({
       type: 'EXIT',
       items: itemsToProcess.map(i => ({ ...i, description: formData.productDescription })),
       notes: formData.productDescription,
-      movementDate: formData.entryDate
+      movementDate: resolvedMovementDate
     });
     setConfirmationSimulation(simulation);
     setShowModal(null);
@@ -1070,11 +1160,16 @@ export default function App() {
       return;
     }
 
+    const nowTime = new Date().toTimeString().split(' ')[0];
+    const resolvedMovementDate = formData.entryDate 
+      ? (formData.entryDate.includes('T') ? formData.entryDate : `${formData.entryDate}T${nowTime}`)
+      : new Date().toISOString();
+
     setPendingTransactionData({
       type: 'SALE',
       items: itemsToProcess.map(i => ({ ...i, description: formData.productDescription })),
       notes: formData.productDescription,
-      movementDate: formData.entryDate
+      movementDate: resolvedMovementDate
     });
     setConfirmationSimulation(simulation);
     setShowModal(null);
@@ -1237,10 +1332,15 @@ export default function App() {
       }
     });
 
+    const nowTime = new Date().toTimeString().split(' ')[0];
+    const resolvedEntryDate = formData.entryDate
+      ? (formData.entryDate.includes('T') ? formData.entryDate : `${formData.entryDate}T${nowTime}`)
+      : new Date().toISOString();
+
     const newBatches: Batch[] = Array.from(consolidatedMap.entries()).map(([productId, data]: any) => ({
       id: crypto.randomUUID(),
       productId: productId,
-      entryDate: new Date(formData.entryDate + 'T12:00:00').toISOString(),
+      entryDate: resolvedEntryDate,
       quantity: data.quantity,
       remainingQuantity: data.quantity,
       unitCost: data.totalCost / (data.quantity || 1),
@@ -1292,8 +1392,14 @@ export default function App() {
         // Calculate consumed portion to maintain inventory integrity
         const consumed = Math.max(0, prevBatch.quantity - prevBatch.remainingQuantity);
         const newRemaining = Math.max(0, formData.quantity - consumed);
+        const nowTime = prevBatch.entryDate.includes('T') ? prevBatch.entryDate.split('T')[1] : '12:00:00';
+        const resolvedEntryDate = formData.entryDate
+          ? (formData.entryDate.includes('T') ? formData.entryDate : `${formData.entryDate}T${nowTime}`)
+          : prevBatch.entryDate;
+
         const updatedBatch = {
           ...prevBatch,
+          entryDate: resolvedEntryDate,
           quantity: formData.quantity,
           remainingQuantity: newRemaining,
           unitCost: formData.cost,
@@ -1302,7 +1408,7 @@ export default function App() {
           performedBy: currentUser?.name || currentUser?.email || 'Sistema'
         };
         dbService.saveBatch(effectiveCompanyId, updatedBatch);
-        addAuditLog('UPDATE', 'BATCH', prevBatch.id, `Lote editado manualmente: ${prevBatch.id.slice(0, 8)} (Stock restante: ${newRemaining})`, prevBatch, updatedBatch);
+        addAuditLog('UPDATE', 'BATCH', prevBatch.id, `Lote editado manualmente: ${prevBatch.id.slice(0, 8)} (Fecha: ${format(new Date(resolvedEntryDate), 'dd/MM/yyyy')}, Stock restante: ${newRemaining})`, prevBatch, updatedBatch);
     }
 
     setShowModal(null);
@@ -1318,6 +1424,378 @@ export default function App() {
       type: 'materia prima',
       productDescription: ''
     });
+  };
+
+  // --- GESTIÓN DE COMPRAS: EDITAR Y ELIMINAR ---
+  const handleOpenEditPurchase = (buy: Batch) => {
+    setPurchaseToEdit(buy);
+    setEditPurchaseForm({
+      quantity: buy.quantity,
+      unitCost: buy.unitCost,
+      supplier: buy.supplier || '',
+      entryDate: buy.entryDate.split('T')[0],
+      description: buy.description || ''
+    });
+  };
+
+  const handleSaveEditPurchase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!purchaseToEdit || !effectiveCompanyId) return;
+
+    const prevBatch = purchaseToEdit;
+    const newQty = Number(editPurchaseForm.quantity);
+    const newCost = Number(editPurchaseForm.unitCost);
+    if (newQty <= 0) {
+      alert('La cantidad de compra debe ser mayor a cero.');
+      return;
+    }
+    if (newCost < 0) {
+      alert('El costo unitario no puede ser negativo.');
+      return;
+    }
+
+    const consumed = Math.max(0, prevBatch.quantity - prevBatch.remainingQuantity);
+    if (newQty < consumed) {
+      alert(`No puede reducir la cantidad comprada a ${newQty} porque ya se han vendido o consumido ${consumed.toFixed(2)} unidades de este lote.`);
+      return;
+    }
+
+    const newRemaining = Math.max(0, newQty - consumed);
+    const resolvedDate = editPurchaseForm.entryDate.includes('T') 
+      ? editPurchaseForm.entryDate 
+      : `${editPurchaseForm.entryDate}T${prevBatch.entryDate.includes('T') ? prevBatch.entryDate.split('T')[1] : '12:00:00'}`;
+
+    const updatedBatch: Batch = {
+      ...prevBatch,
+      entryDate: resolvedDate,
+      quantity: newQty,
+      remainingQuantity: newRemaining,
+      unitCost: newCost,
+      supplier: editPurchaseForm.supplier.trim() || 'Proveedor',
+      description: editPurchaseForm.description.trim()
+    };
+
+    await dbService.saveBatch(effectiveCompanyId, updatedBatch);
+
+    const prod = products.find(p => p.id === prevBatch.productId);
+    const prodName = prod?.name || 'Producto';
+
+    addAuditLog(
+      'UPDATE',
+      'BATCH',
+      prevBatch.id,
+      `Compra editada: Lote ${prevBatch.id.slice(0, 8)} (${prodName}) | Cantidad: ${prevBatch.quantity} -> ${newQty} | Costo: Bs. ${newCost} | Prov: ${updatedBatch.supplier}`,
+      prevBatch,
+      updatedBatch
+    );
+
+    addNotification({
+      type: 'SUCCESS',
+      title: 'Compra Actualizada',
+      message: `Se ha modificado la compra de "${prodName}".`,
+      linkTab: 'purchases'
+    });
+
+    setPurchaseToEdit(null);
+  };
+
+  const handleDeletePurchase = (buy: Batch) => {
+    setPurchaseToDelete(buy);
+  };
+
+  const executeConfirmDeletePurchase = async () => {
+    if (!purchaseToDelete || !effectiveCompanyId || isDeletingMovement) return;
+    setIsDeletingMovement(true);
+
+    const buy = purchaseToDelete;
+    const prod = products.find(p => p.id === buy.productId);
+    const prodName = prod?.name || 'Producto';
+
+    try {
+      await dbService.deleteItem(effectiveCompanyId, 'batches', buy.id);
+
+      // Clean from selected purchases if it was marked
+      setSelectedPurchases(prev => prev.filter(id => id !== buy.id));
+
+      addAuditLog(
+        'DELETE',
+        'BATCH',
+        buy.id,
+        `Compra eliminada: Lote ${buy.id.slice(0, 8)} (${buy.quantity} ${prod?.unit || 'unidad'}s de "${prodName}", Proveedor: ${buy.supplier})`,
+        buy,
+        null
+      );
+
+      addNotification({
+        type: 'WARNING',
+        title: 'Compra Eliminada',
+        message: `Se eliminó el registro de compra de ${buy.quantity} ${prod?.unit || 'unidad'}s de "${prodName}".`,
+        linkTab: 'purchases'
+      });
+      setPurchaseToDelete(null);
+    } catch (err) {
+      console.error('Error al eliminar compra:', err);
+      addNotification({
+        type: 'WARNING',
+        title: 'Error al Eliminar',
+        message: 'No se pudo eliminar el lote de compra. Inténtelo nuevamente.',
+        linkTab: 'purchases'
+      });
+    } finally {
+      setIsDeletingMovement(false);
+    }
+  };
+
+  const executeConfirmDeleteBulkPurchases = async () => {
+    if (!bulkPurchasesToDelete || !effectiveCompanyId || isDeletingMovement) return;
+    setIsDeletingMovement(true);
+
+    try {
+      const items = [...bulkPurchasesToDelete];
+      for (const buy of items) {
+        await dbService.deleteItem(effectiveCompanyId, 'batches', buy.id);
+        const prod = products.find(p => p.id === buy.productId);
+        addAuditLog(
+          'DELETE',
+          'BATCH',
+          buy.id,
+          `Compra eliminada en lote: ${buy.quantity} ${prod?.unit || 'unidad'}s de "${prod?.name || 'Producto'}"`,
+          buy,
+          null
+        );
+      }
+
+      const deletedIds = new Set(items.map(i => i.id));
+      setSelectedPurchases(prev => prev.filter(id => !deletedIds.has(id)));
+
+      addNotification({
+        type: 'WARNING',
+        title: 'Compras Eliminadas',
+        message: `Se eliminaron con éxito ${items.length} registros de compras seleccionados.`,
+        linkTab: 'purchases'
+      });
+      setBulkPurchasesToDelete(null);
+    } catch (err) {
+      console.error('Error al eliminar compras en lote:', err);
+      addNotification({
+        type: 'WARNING',
+        title: 'Error en Eliminación',
+        message: 'Ocurrió un error al eliminar algunos registros.',
+        linkTab: 'purchases'
+      });
+    } finally {
+      setIsDeletingMovement(false);
+    }
+  };
+
+  // --- GESTIÓN DE VENTAS: EDITAR, ELIMINAR Y EXPORTAR ---
+  const handleOpenEditSale = (sale: Transaction) => {
+    setSaleToEdit(sale);
+    setEditSaleForm({
+      quantity: sale.quantity,
+      salePrice: sale.salePrice || sale.unitCost || 0,
+      date: sale.date.split('T')[0],
+      reference: sale.reference || '',
+      description: sale.description || ''
+    });
+  };
+
+  const handleSaveEditSale = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!saleToEdit || !effectiveCompanyId) return;
+
+    const prevSale = saleToEdit;
+    const newQty = Number(editSaleForm.quantity);
+    const newSalePrice = Number(editSaleForm.salePrice);
+    if (newQty <= 0) {
+      alert('La cantidad vendida debe ser mayor a cero.');
+      return;
+    }
+    if (newSalePrice < 0) {
+      alert('El precio de venta no puede ser negativo.');
+      return;
+    }
+
+    const qtyDiff = newQty - prevSale.quantity;
+
+    // If quantity changed, adjust the associated batch
+    if (qtyDiff !== 0 && prevSale.batchId) {
+      const associatedBatch = batches.find(b => b.id === prevSale.batchId);
+      if (associatedBatch) {
+        if (qtyDiff > 0 && associatedBatch.remainingQuantity < qtyDiff) {
+          alert(`No hay suficiente stock disponible en el lote original para aumentar la venta en ${qtyDiff} unidades (Disponible en lote: ${associatedBatch.remainingQuantity}).`);
+          return;
+        }
+        const updatedBatch = {
+          ...associatedBatch,
+          remainingQuantity: Math.max(0, Math.min(associatedBatch.quantity, associatedBatch.remainingQuantity - qtyDiff))
+        };
+        await dbService.saveBatch(effectiveCompanyId, updatedBatch);
+      }
+    }
+
+    const resolvedDate = editSaleForm.date.includes('T')
+      ? editSaleForm.date
+      : `${editSaleForm.date}T${prevSale.date.includes('T') ? prevSale.date.split('T')[1] : '12:00:00'}`;
+
+    const updatedTx: Transaction = {
+      ...prevSale,
+      date: resolvedDate,
+      quantity: newQty,
+      salePrice: newSalePrice,
+      reference: editSaleForm.reference.trim() || prevSale.reference,
+      description: editSaleForm.description.trim()
+    };
+
+    await dbService.saveTransaction(effectiveCompanyId, updatedTx);
+
+    const prod = products.find(p => p.id === prevSale.productId);
+    const prodName = prod?.name || 'Producto';
+
+    addAuditLog(
+      'UPDATE',
+      'TRANSACTION',
+      prevSale.id,
+      `Venta editada: ${prodName} | Cantidad: ${prevSale.quantity} -> ${newQty} | Precio: Bs. ${newSalePrice} | Ref: ${updatedTx.reference}`,
+      prevSale,
+      updatedTx
+    );
+
+    addNotification({
+      type: 'SUCCESS',
+      title: 'Venta Actualizada',
+      message: `Se modificó la venta de "${prodName}" (Total: Bs. ${(newQty * newSalePrice).toLocaleString('es-CO', { minimumFractionDigits: 2 })}).`,
+      linkTab: 'sales'
+    });
+
+    setSaleToEdit(null);
+  };
+
+  const handleDeleteSale = (sale: Transaction) => {
+    setSaleToDelete(sale);
+  };
+
+  const executeConfirmDeleteSale = async () => {
+    if (!saleToDelete || !effectiveCompanyId || isDeletingMovement) return;
+    setIsDeletingMovement(true);
+
+    const sale = saleToDelete;
+    const prod = products.find(p => p.id === sale.productId);
+    const prodName = prod?.name || 'Producto';
+
+    try {
+      // 1. Restore stock to batch if batchId exists
+      let stockRestored = false;
+      if (sale.batchId) {
+        const associatedBatch = batches.find(b => b.id === sale.batchId);
+        if (associatedBatch) {
+          const restoredRemaining = Math.min(associatedBatch.quantity, associatedBatch.remainingQuantity + sale.quantity);
+          const updatedBatch = {
+            ...associatedBatch,
+            remainingQuantity: restoredRemaining
+          };
+          await dbService.saveBatch(effectiveCompanyId, updatedBatch);
+          stockRestored = true;
+        }
+      }
+
+      // If associated batch was not found, restore to another existing batch of the same product or create a return batch
+      if (!stockRestored && sale.productId) {
+        const candidateBatch = batches.find(b => b.productId === sale.productId && b.remainingQuantity < b.quantity);
+        if (candidateBatch) {
+          const restoredRemaining = Math.min(candidateBatch.quantity, candidateBatch.remainingQuantity + sale.quantity);
+          await dbService.saveBatch(effectiveCompanyId, {
+            ...candidateBatch,
+            remainingQuantity: restoredRemaining
+          });
+          stockRestored = true;
+        } else {
+          // If all batches are full or none found, create a replenishment batch to return stock
+          const returnBatch: Batch = {
+            id: crypto.randomUUID(),
+            productId: sale.productId,
+            entryDate: new Date().toISOString(),
+            quantity: sale.quantity,
+            remainingQuantity: sale.quantity,
+            unitCost: sale.unitCost || 0,
+            supplier: 'Devolución de Venta',
+            description: `Stock restituido por anulación de venta ${sale.id.slice(0, 8)}`,
+            type: 'ENTRY',
+            performedBy: currentUser?.name || currentUser?.email || 'Sistema'
+          };
+          await dbService.saveBatch(effectiveCompanyId, returnBatch);
+          stockRestored = true;
+        }
+      }
+
+      // 2. Delete the sale transaction
+      await dbService.deleteItem(effectiveCompanyId, 'transactions', sale.id);
+
+      addAuditLog(
+        'DELETE',
+        'TRANSACTION',
+        sale.id,
+        `Venta eliminada: ${sale.quantity} ${prod?.unit || 'unidad'}s de "${prodName}" (Stock restituido a almacén)`,
+        sale,
+        null
+      );
+
+      addNotification({
+        type: 'SUCCESS',
+        title: 'Venta Eliminada',
+        message: `Se eliminó la venta de "${prodName}" y se restituyeron ${sale.quantity} ${prod?.unit || 'unidad'}s al inventario.`,
+        linkTab: 'sales'
+      });
+
+      setSaleToDelete(null);
+    } catch (err) {
+      console.error('Error al eliminar venta:', err);
+      addNotification({
+        type: 'WARNING',
+        title: 'Error al Eliminar',
+        message: 'No se pudo eliminar el registro de venta. Inténtelo nuevamente.',
+        linkTab: 'sales'
+      });
+    } finally {
+      setIsDeletingMovement(false);
+    }
+  };
+
+  const handleExportSalesXLSX = () => {
+    if (filteredSaleReports.length === 0) {
+      alert('No hay ventas registradas para exportar con los filtros seleccionados.');
+      return;
+    }
+    const headers = ['Fecha', 'Producto', 'Categoría', 'Cantidad', 'Unidad', 'Precio Venta Unit. (Bs)', 'Costo Unit. PEPS (Bs)', 'Total Venta (Bs)', 'Costo Total (Bs)', 'Utilidad Bruta (Bs)', 'Margen (%)', 'Referencia / Factura', 'Notas', 'Vendedor'];
+    const rows = filteredSaleReports.map(s => {
+      const product = products.find(p => p.id === s.productId);
+      const price = s.salePrice || s.unitCost || 0;
+      const totalSale = s.quantity * price;
+      const totalCost = s.quantity * s.unitCost;
+      const profit = totalSale - totalCost;
+      const margin = totalSale > 0 ? (profit / totalSale) * 100 : 0;
+      return [
+        format(new Date(s.date), 'dd/MM/yyyy HH:mm'),
+        product?.name || 'Inexistente',
+        product?.category || 'N/A',
+        s.quantity,
+        product?.unit || 'unidad',
+        price.toFixed(2),
+        s.unitCost.toFixed(2),
+        totalSale.toFixed(2),
+        totalCost.toFixed(2),
+        profit.toFixed(2),
+        `${margin.toFixed(1)}%`,
+        s.reference || 'N/A',
+        s.description || '',
+        s.performedBy || 'Sistema'
+      ];
+    });
+
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Reporte de Ventas');
+    XLSX.writeFile(workbook, `reporte_ventas_${format(new Date(), 'yyyyMMdd_HHmm')}.xlsx`);
   };
 
   const handleExportXLSX = (mode: 'filtered' | 'all' = 'filtered') => {
@@ -1584,10 +2062,13 @@ export default function App() {
       packagingDesc = ` (Equivale a ${boxesCount ? `${boxesCount} cajas` : ''}${boxesCount && bundlesCount ? ' / ' : ''}${bundlesCount ? `${bundlesCount} bultos` : ''})`;
     }
 
+    const nowTime = new Date().toTimeString().split(' ')[0];
+    const resolvedProdDate = prodDate.includes('T') ? prodDate : `${prodDate}T${nowTime}`;
+
     const newFinishedBatch: Batch = {
       id: crypto.randomUUID(),
       productId: finishedProduct.id,
-      entryDate: new Date(prodDate + 'T12:00:00').toISOString(),
+      entryDate: resolvedProdDate,
       quantity: totalUnits,
       remainingQuantity: totalUnits,
       unitCost: unitCost,
@@ -3219,7 +3700,8 @@ export default function App() {
                                           quantity: batch.quantity,
                                           cost: batch.unitCost,
                                           supplier: batch.supplier,
-                                          productDescription: batch.description || ''
+                                          productDescription: batch.description || '',
+                                          entryDate: batch.entryDate ? (batch.entryDate.includes('T') ? batch.entryDate.split('T')[0] : batch.entryDate) : new Date().toISOString().split('T')[0]
                                         });
                                         setShowModal('edit_batch');
                                       }}
@@ -3396,6 +3878,19 @@ export default function App() {
                           Consolidar Seleccionados ({selectedPurchases.length})
                         </button>
                       )}
+                      {selectedPurchases.length > 0 && (
+                        <button 
+                          onClick={() => {
+                            const selected = batches.filter(b => selectedPurchases.includes(b.id));
+                            setBulkPurchasesToDelete(selected);
+                          }}
+                          className="bg-red-500/10 text-red-500 border border-red-500/20 px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-red-500 hover:text-white transition-all active:scale-95 flex items-center gap-1.5"
+                          title="Eliminar todos los registros de compra seleccionados"
+                        >
+                          <Trash2 size={13} />
+                          Eliminar Seleccionados ({selectedPurchases.length})
+                        </button>
+                      )}
                     </div>
                   </div>
                   
@@ -3465,6 +3960,7 @@ export default function App() {
                           <th className="px-8 py-5 border-b border-main text-right">Costo Unit.</th>
                           <th className="px-8 py-5 border-b border-main text-right">Total</th>
                           <th className="px-8 py-5 border-b border-main">Usuario</th>
+                          <th className="px-6 py-5 border-b border-main text-center">Acciones</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-main/5">
@@ -3494,16 +3990,41 @@ export default function App() {
                                 <td className="px-8 py-5 text-main font-black whitespace-nowrap uppercase tracking-tight">{product?.name || 'Inexistente'}</td>
                                 <td className="px-8 py-5 text-muted font-bold text-[11px] opacity-60 italic">{product?.category || 'N/A'}</td>
                                 <td className="px-8 py-5 text-main font-bold whitespace-nowrap">{buy.supplier}</td>
-                                <td className="px-8 py-5 text-accent font-black">{buy.quantity} <span className="text-[9px] opacity-50">{product?.unit}</span></td>
+                                <td className="px-8 py-5 text-accent font-black">
+                                  <div>{buy.quantity} <span className="text-[9px] opacity-50">{product?.unit}</span></div>
+                                  {buy.remainingQuantity < buy.quantity && (
+                                    <span className="text-[8px] font-bold text-muted block opacity-80" title="Cantidad restante disponible en almacén">
+                                      Disp: {buy.remainingQuantity}
+                                    </span>
+                                  )}
+                                </td>
                                 <td className="px-8 py-5 text-right font-mono text-xs font-bold text-muted">Bs. {buy.unitCost.toLocaleString()}</td>
                                 <td className="px-8 py-5 text-right font-mono text-xs font-black text-main">Bs. {(buy.quantity * buy.unitCost).toLocaleString()}</td>
                                 <td className="px-8 py-5 text-muted font-medium text-[10px] opacity-70 italic">{buy.performedBy || 'Sistema'}</td>
+                                <td className="px-6 py-5 border-b border-main/5 text-center whitespace-nowrap">
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      onClick={() => handleOpenEditPurchase(buy)}
+                                      className="p-2 text-accent hover:bg-accent/15 rounded-xl transition-all"
+                                      title="Editar Compra (Fecha, Proveedor, Cantidad, Costo, Notas)"
+                                    >
+                                      <Pencil size={15} />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeletePurchase(buy)}
+                                      className="p-2 text-red-500 hover:bg-red-500/15 rounded-xl transition-all"
+                                      title="Eliminar Compra"
+                                    >
+                                      <Trash2 size={15} />
+                                    </button>
+                                  </div>
+                                </td>
                               </tr>
                             );
                           })
                         ) : (
                           <tr>
-                            <td colSpan={9} className="px-8 py-20 text-center text-muted font-black uppercase tracking-[0.2em] opacity-40">No se encontraron registros de compras</td>
+                            <td colSpan={10} className="px-8 py-20 text-center text-muted font-black uppercase tracking-[0.2em] opacity-40">No se encontraron registros de compras</td>
                           </tr>
                         )}
                       </tbody>
@@ -3549,9 +4070,19 @@ export default function App() {
                 <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-sidebar p-6 rounded-2xl border border-main shadow-sm mb-8">
                     <div>
                         <h2 className="text-3xl font-black uppercase tracking-tighter">Módulo de Ventas</h2>
-                        <p className="text-muted text-sm font-bold opacity-60 uppercase tracking-widest">Registra ventas y salidas directas con verificación FIFO</p>
+                        <p className="text-muted text-sm font-bold opacity-60 uppercase tracking-widest">
+                          Registro, Historial de Ventas, Edición, Eliminación y Verificación PEPS
+                        </p>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button 
+                        onClick={handleExportSalesXLSX}
+                        className="flex items-center gap-2 bg-sidebar border border-main px-5 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] hover:bg-accent hover:text-white hover:border-accent transition-all shadow-sm active:scale-95"
+                        title="Exportar reporte de ventas a Excel"
+                      >
+                        <Download size={14} />
+                        Excel Ventas
+                      </button>
                       <button
                         onClick={() => {
                           setSelectedProductId(null);
@@ -3575,9 +4106,223 @@ export default function App() {
                         <ShoppingCart size={16} />
                         Nueva Venta / Venta Masiva
                       </button>
-                      <BadgeDollarSign size={40} className="text-accent opacity-20 hidden md:block" />
                     </div>
                 </header>
+
+                {/* Sales Summary KPI Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                  <div className="bg-sidebar p-5 rounded-2xl border border-main shadow-sm">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-muted block mb-1">
+                      Total Ventas (Bs.)
+                    </span>
+                    <span className="text-2xl font-black text-accent block">
+                      Bs. {salesSummary.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                    <span className="text-[9px] font-bold text-muted uppercase tracking-wider block mt-1">
+                      {filteredSaleReports.length} {filteredSaleReports.length === 1 ? 'operación' : 'operaciones'}
+                    </span>
+                  </div>
+
+                  <div className="bg-sidebar p-5 rounded-2xl border border-main shadow-sm">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-muted block mb-1">
+                      Unidades Vendidas
+                    </span>
+                    <span className="text-2xl font-black text-main block">
+                      {salesSummary.totalUnits.toLocaleString()}
+                    </span>
+                    <span className="text-[9px] font-bold text-muted uppercase tracking-wider block mt-1">
+                      En el período filtrado
+                    </span>
+                  </div>
+
+                  <div className="bg-sidebar p-5 rounded-2xl border border-main shadow-sm">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-muted block mb-1">
+                      Costo de Ventas (COGS)
+                    </span>
+                    <span className="text-2xl font-black text-muted block font-mono">
+                      Bs. {salesSummary.totalCogs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                    <span className="text-[9px] font-bold text-muted uppercase tracking-wider block mt-1">
+                      Valuación PEPS
+                    </span>
+                  </div>
+
+                  <div className="bg-sidebar p-5 rounded-2xl border border-main shadow-sm">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-muted block mb-1">
+                      Utilidad Bruta Estimada
+                    </span>
+                    <span className={cn(
+                      "text-2xl font-black block",
+                      salesSummary.grossProfit >= 0 ? "text-emerald-500" : "text-red-500"
+                    )}>
+                      Bs. {salesSummary.grossProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                    <span className="text-[9px] font-bold text-emerald-500 uppercase tracking-wider block mt-1">
+                      Margen: {salesSummary.profitMargin.toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+
+                {/* Sales Filter Bar */}
+                <div className="bg-sidebar p-8 rounded-[2rem] border border-main shadow-sm space-y-6 mb-8">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Settings size={16} className="text-accent" />
+                      <span className="text-[10px] font-black uppercase tracking-[0.2em] text-muted">
+                        Filtros de Registro de Ventas
+                      </span>
+                    </div>
+                    {filteredSaleReports.length > 0 && (
+                      <span className="text-[10px] font-black uppercase tracking-wider text-accent bg-accent/10 px-3 py-1 rounded-full">
+                        {filteredSaleReports.length} {filteredSaleReports.length === 1 ? 'Venta encontrada' : 'Ventas encontradas'}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-muted ml-1">
+                        Buscar Producto, Factura o Cliente
+                      </label>
+                      <div className="relative">
+                        <input 
+                          type="text"
+                          placeholder="Buscar por nombre, nota, factura..."
+                          value={saleFilterSearch}
+                          onChange={(e) => setSaleFilterSearch(e.target.value)}
+                          className="w-full bg-main/5 border border-main/20 rounded-xl pl-10 pr-4 py-3 text-xs font-bold focus:border-accent outline-none transition-all"
+                        />
+                        <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-muted ml-1">
+                        Fecha Inicial
+                      </label>
+                      <input 
+                        type="date"
+                        value={saleFilterStartDate}
+                        onChange={(e) => setSaleFilterStartDate(e.target.value)}
+                        className="w-full bg-main/5 border border-main/20 rounded-xl px-5 py-3 text-xs font-bold focus:border-accent outline-none transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-muted ml-1">
+                        Fecha Final
+                      </label>
+                      <input 
+                        type="date"
+                        value={saleFilterEndDate}
+                        onChange={(e) => setSaleFilterEndDate(e.target.value)}
+                        className="w-full bg-main/5 border border-main/20 rounded-xl px-5 py-3 text-xs font-bold focus:border-accent outline-none transition-all"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Sales Movements Table */}
+                <div className="bg-sidebar rounded-3xl border border-main overflow-hidden shadow-2xl relative mb-10">
+                  <div className="px-8 py-6 border-b border-main flex justify-between items-center bg-black/10 dark:bg-white/5">
+                    <div className="flex items-center gap-4">
+                      <div className="w-2 h-2 rounded-full bg-accent animate-pulse" />
+                      <span className="text-xs font-black tracking-[0.4em] text-muted uppercase">
+                        Registro y Movimientos de Ventas Realizadas
+                      </span>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead className="text-muted text-[10px] font-bold uppercase tracking-wider">
+                        <tr>
+                          <th className="px-6 py-5 border-b border-main">Fecha</th>
+                          <th className="px-6 py-5 border-b border-main">Producto</th>
+                          <th className="px-6 py-5 border-b border-main">Categoría</th>
+                          <th className="px-6 py-5 border-b border-main text-center">Ctd.</th>
+                          <th className="px-6 py-5 border-b border-main text-right">P. Venta Unit.</th>
+                          <th className="px-6 py-5 border-b border-main text-right">Total Venta</th>
+                          <th className="px-6 py-5 border-b border-main text-right">Costo PEPS</th>
+                          <th className="px-6 py-5 border-b border-main text-right">Utilidad</th>
+                          <th className="px-6 py-5 border-b border-main">Factura / Referencia</th>
+                          <th className="px-6 py-5 border-b border-main">Vendedor</th>
+                          <th className="px-6 py-5 border-b border-main text-center">Acciones</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-main/5">
+                        {filteredSaleReports.length > 0 ? (
+                          filteredSaleReports.map((sale) => {
+                            const product = products.find(p => p.id === sale.productId);
+                            const unitPrice = sale.salePrice || sale.unitCost || 0;
+                            const totalRevenue = sale.quantity * unitPrice;
+                            const totalCost = sale.quantity * sale.unitCost;
+                            const profit = totalRevenue - totalCost;
+
+                            return (
+                              <tr key={sale.id} className="hover:bg-accent/5 transition-all group">
+                                <td className="px-6 py-5 whitespace-nowrap text-muted font-medium text-xs">
+                                  {format(new Date(sale.date), 'dd/MM/yy HH:mm')}
+                                </td>
+                                <td className="px-6 py-5 text-main font-black whitespace-nowrap uppercase tracking-tight text-xs">
+                                  {product?.name || 'Inexistente'}
+                                </td>
+                                <td className="px-6 py-5 text-muted font-bold text-[11px] opacity-60 italic">
+                                  {product?.category || 'N/A'}
+                                </td>
+                                <td className="px-6 py-5 text-accent font-black text-center text-xs">
+                                  {sale.quantity} <span className="text-[9px] opacity-50">{product?.unit}</span>
+                                </td>
+                                <td className="px-6 py-5 text-right font-mono text-xs font-bold text-main">
+                                  Bs. {unitPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
+                                <td className="px-6 py-5 text-right font-mono text-xs font-black text-accent">
+                                  Bs. {totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
+                                <td className="px-6 py-5 text-right font-mono text-xs font-medium text-muted">
+                                  Bs. {sale.unitCost.toFixed(2)}
+                                </td>
+                                <td className={cn(
+                                  "px-6 py-5 text-right font-mono text-xs font-black",
+                                  profit >= 0 ? "text-emerald-500" : "text-red-500"
+                                )}>
+                                  Bs. {profit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
+                                <td className="px-6 py-5 text-muted font-medium text-[11px] max-w-[180px] truncate" title={sale.reference || sale.description || ''}>
+                                  {sale.reference || sale.description || 'Sin notas'}
+                                </td>
+                                <td className="px-6 py-5 text-muted font-medium text-[10px] opacity-70 italic">
+                                  {sale.performedBy || 'Sistema'}
+                                </td>
+                                <td className="px-6 py-5 text-center whitespace-nowrap">
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      onClick={() => handleOpenEditSale(sale)}
+                                      className="p-2 text-accent hover:bg-accent/15 rounded-xl transition-all"
+                                      title="Editar Venta (Precio, Cantidad, Fecha, Factura/Notas)"
+                                    >
+                                      <Pencil size={15} />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteSale(sale)}
+                                      className="p-2 text-red-500 hover:bg-red-500/15 rounded-xl transition-all"
+                                      title="Eliminar Venta y Restituir Stock"
+                                    >
+                                      <Trash2 size={15} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        ) : (
+                          <tr>
+                            <td colSpan={11} className="px-8 py-20 text-center text-muted font-black uppercase tracking-[0.2em] opacity-40">
+                              No se encontraron registros de ventas
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
 
                 {salesTrendData.length > 0 && (
                   <div className="bg-sidebar p-8 rounded-[2rem] border border-main shadow-sm mb-8">
@@ -3956,7 +4701,8 @@ export default function App() {
                                                 quantity: batch.quantity,
                                                 cost: batch.unitCost,
                                                 supplier: batch.supplier,
-                                                productDescription: batch.description || ''
+                                                productDescription: batch.description || '',
+                                                entryDate: batch.entryDate ? (batch.entryDate.includes('T') ? batch.entryDate.split('T')[0] : batch.entryDate) : new Date().toISOString().split('T')[0]
                                               });
                                               setShowModal('edit_batch');
                                             }
@@ -4761,9 +5507,12 @@ export default function App() {
                   } 
                   className="space-y-6"
                 >
-                  {(showModal === 'entry' || showModal === 'purchase' || showModal === 'exit' || showModal === 'sale') && (
+                  {(showModal === 'entry' || showModal === 'purchase' || showModal === 'exit' || showModal === 'sale' || showModal === 'edit_batch') && (
                     <div>
-                      <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em] mb-2">Fecha del Movimiento</label>
+                      <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em] mb-2 flex items-center justify-between">
+                        <span>Fecha del Movimiento</span>
+                        <span className="text-[9px] text-accent font-bold uppercase tracking-wider">Sincroniza con Kardex</span>
+                      </label>
                       <input 
                         type="date" required
                         className="w-full bg-black/5 dark:bg-black/30 border border-main rounded-xl px-5 py-4 focus:outline-none focus:border-accent font-bold text-main uppercase text-xs"
@@ -5134,6 +5883,11 @@ export default function App() {
         isOpen={confirmationSimulation !== null}
         simulation={confirmationSimulation}
         movementDate={pendingTransactionData?.movementDate}
+        onDateChange={(newDate) => {
+          const nowTime = new Date().toTimeString().split(' ')[0];
+          const resolved = newDate.includes('T') ? newDate : `${newDate}T${nowTime}`;
+          setPendingTransactionData(prev => prev ? { ...prev, movementDate: resolved } : null);
+        }}
         operatorName={currentUser?.name || currentUser?.email || 'Operador'}
         notes={pendingTransactionData?.notes}
         isSubmitting={isExecutingTransaction}
@@ -6291,6 +7045,508 @@ export default function App() {
                 className="flex-[1.5] bg-red-500 text-white py-3 rounded-xl font-black hover:bg-red-600 transition-all shadow-lg shadow-red-500/20 text-sm uppercase tracking-widest"
               >
                 Eliminar Ahora
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Modal Editar Compra */}
+      {purchaseToEdit && (
+        <div className="fixed inset-0 bg-main/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ scale: 0.95, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-card w-full max-w-lg rounded-3xl p-6 md:p-8 shadow-2xl border border-main overflow-y-auto max-h-[90vh]"
+          >
+            <div className="flex justify-between items-start mb-6">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-accent block mb-1">
+                  Módulo de Compras
+                </span>
+                <h3 className="text-xl md:text-2xl font-black uppercase tracking-tight text-main">
+                  Editar Registro de Compra
+                </h3>
+                <p className="text-xs text-muted font-bold mt-1 uppercase tracking-wider">
+                  Producto: {products.find(p => p.id === purchaseToEdit.productId)?.name || 'Producto'} • Lote: {purchaseToEdit.id.slice(0, 8)}
+                </p>
+              </div>
+              <button 
+                onClick={() => setPurchaseToEdit(null)}
+                className="p-2 text-muted hover:text-main rounded-xl hover:bg-main/5 transition-all"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditPurchase} className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em] mb-2">
+                  Fecha de la Compra
+                </label>
+                <input 
+                  type="date" required
+                  className="w-full bg-black/5 dark:bg-black/30 border border-main rounded-xl px-5 py-3 focus:outline-none focus:border-accent font-bold text-main uppercase text-xs"
+                  value={editPurchaseForm.entryDate}
+                  onChange={e => setEditPurchaseForm({ ...editPurchaseForm, entryDate: e.target.value })}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em] mb-2">
+                  Proveedor
+                </label>
+                <input 
+                  type="text" required
+                  className="w-full bg-black/5 dark:bg-black/30 border border-main rounded-xl px-5 py-3 focus:outline-none focus:border-accent font-bold text-main uppercase text-xs"
+                  value={editPurchaseForm.supplier}
+                  onChange={e => setEditPurchaseForm({ ...editPurchaseForm, supplier: e.target.value })}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em]">
+                      Cantidad
+                    </label>
+                    {purchaseToEdit.remainingQuantity < purchaseToEdit.quantity && (
+                      <span className="text-[9px] font-black text-amber-500 uppercase">
+                        Consumido: {(purchaseToEdit.quantity - purchaseToEdit.remainingQuantity).toFixed(1)}
+                      </span>
+                    )}
+                  </div>
+                  <input 
+                    type="number" step="0.01" min="0.01" required
+                    className="w-full bg-black/5 dark:bg-black/30 border border-main rounded-xl px-5 py-3 focus:outline-none focus:border-accent font-bold text-main font-mono text-xs"
+                    value={editPurchaseForm.quantity}
+                    onChange={e => setEditPurchaseForm({ ...editPurchaseForm, quantity: Number(e.target.value) })}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em] mb-2">
+                    Costo Unitario (Bs.)
+                  </label>
+                  <input 
+                    type="number" step="0.01" min="0" required
+                    className="w-full bg-black/5 dark:bg-black/30 border border-main rounded-xl px-5 py-3 focus:outline-none focus:border-accent font-bold text-main font-mono text-xs"
+                    value={editPurchaseForm.unitCost}
+                    onChange={e => setEditPurchaseForm({ ...editPurchaseForm, unitCost: Number(e.target.value) })}
+                  />
+                </div>
+              </div>
+
+              <div className="p-3 bg-accent/5 rounded-xl border border-accent/20 flex justify-between items-center">
+                <span className="text-[10px] font-black uppercase tracking-wider text-muted">
+                  Total de la Compra:
+                </span>
+                <span className="text-sm font-black text-accent font-mono">
+                  Bs. {(Number(editPurchaseForm.quantity) * Number(editPurchaseForm.unitCost)).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em] mb-2">
+                  Descripción / Factura / Notas
+                </label>
+                <textarea 
+                  className="w-full bg-black/5 dark:bg-black/30 border border-main rounded-xl px-5 py-3 focus:outline-none focus:border-accent font-bold text-main text-xs min-h-[70px]"
+                  value={editPurchaseForm.description}
+                  onChange={e => setEditPurchaseForm({ ...editPurchaseForm, description: e.target.value })}
+                  placeholder="Número de factura o notas de compra..."
+                />
+              </div>
+
+              <div className="flex gap-3 pt-3 border-t border-main/20">
+                <button 
+                  type="button"
+                  onClick={() => {
+                    const buy = purchaseToEdit;
+                    setPurchaseToEdit(null);
+                    setPurchaseToDelete(buy);
+                  }}
+                  className="p-3 bg-red-500/10 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all border border-red-500/20"
+                  title="Eliminar esta compra"
+                >
+                  <Trash2 size={16} />
+                </button>
+                <button 
+                  type="button"
+                  onClick={() => setPurchaseToEdit(null)}
+                  className="flex-1 bg-main/5 text-muted py-3 rounded-xl font-bold border border-main hover:bg-main/10 transition-all text-xs uppercase tracking-widest"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  type="submit"
+                  className="flex-[2] bg-accent text-white py-3 rounded-xl font-black tracking-widest hover:brightness-110 shadow-lg shadow-brand-gold-shadow uppercase text-xs transition-all flex items-center justify-center gap-2"
+                >
+                  <Check size={16} /> Guardar Cambios
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Modal Editar Venta */}
+      {saleToEdit && (
+        <div className="fixed inset-0 bg-main/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ scale: 0.95, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-card w-full max-w-lg rounded-3xl p-6 md:p-8 shadow-2xl border border-main overflow-y-auto max-h-[90vh]"
+          >
+            <div className="flex justify-between items-start mb-6">
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-accent block mb-1">
+                  Módulo de Ventas
+                </span>
+                <h3 className="text-xl md:text-2xl font-black uppercase tracking-tight text-main">
+                  Editar Registro de Venta
+                </h3>
+                <p className="text-xs text-muted font-bold mt-1 uppercase tracking-wider">
+                  Producto: {products.find(p => p.id === saleToEdit.productId)?.name || 'Producto'} • Movimiento: {saleToEdit.id.slice(0, 8)}
+                </p>
+              </div>
+              <button 
+                onClick={() => setSaleToEdit(null)}
+                className="p-2 text-muted hover:text-main rounded-xl hover:bg-main/5 transition-all"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditSale} className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em] mb-2">
+                  Fecha de la Venta
+                </label>
+                <input 
+                  type="date" required
+                  className="w-full bg-black/5 dark:bg-black/30 border border-main rounded-xl px-5 py-3 focus:outline-none focus:border-accent font-bold text-main uppercase text-xs"
+                  value={editSaleForm.date}
+                  onChange={e => setEditSaleForm({ ...editSaleForm, date: e.target.value })}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em] mb-2">
+                    Cantidad Vendida
+                  </label>
+                  <input 
+                    type="number" step="0.01" min="0.01" required
+                    className="w-full bg-black/5 dark:bg-black/30 border border-main rounded-xl px-5 py-3 focus:outline-none focus:border-accent font-bold text-main font-mono text-xs"
+                    value={editSaleForm.quantity}
+                    onChange={e => setEditSaleForm({ ...editSaleForm, quantity: Number(e.target.value) })}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em] mb-2">
+                    Precio Venta Unitario (Bs.)
+                  </label>
+                  <input 
+                    type="number" step="0.01" min="0" required
+                    className="w-full bg-black/5 dark:bg-black/30 border border-main rounded-xl px-5 py-3 focus:outline-none focus:border-accent font-bold text-main font-mono text-xs"
+                    value={editSaleForm.salePrice}
+                    onChange={e => setEditSaleForm({ ...editSaleForm, salePrice: Number(e.target.value) })}
+                  />
+                </div>
+              </div>
+
+              <div className="p-3 bg-accent/5 rounded-xl border border-accent/20 flex justify-between items-center">
+                <span className="text-[10px] font-black uppercase tracking-wider text-muted">
+                  Total de la Venta Facturada:
+                </span>
+                <span className="text-sm font-black text-accent font-mono">
+                  Bs. {(Number(editSaleForm.quantity) * Number(editSaleForm.salePrice)).toLocaleString('es-CO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em] mb-2">
+                  Factura / Referencia / Comprobante
+                </label>
+                <input 
+                  type="text"
+                  className="w-full bg-black/5 dark:bg-black/30 border border-main rounded-xl px-5 py-3 focus:outline-none focus:border-accent font-bold text-main text-xs"
+                  value={editSaleForm.reference}
+                  onChange={e => setEditSaleForm({ ...editSaleForm, reference: e.target.value })}
+                  placeholder="Número de factura o referencia..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em] mb-2">
+                  Notas / Cliente / Descripción
+                </label>
+                <textarea 
+                  className="w-full bg-black/5 dark:bg-black/30 border border-main rounded-xl px-5 py-3 focus:outline-none focus:border-accent font-bold text-main text-xs min-h-[70px]"
+                  value={editSaleForm.description}
+                  onChange={e => setEditSaleForm({ ...editSaleForm, description: e.target.value })}
+                  placeholder="Cliente o notas de la venta..."
+                />
+              </div>
+
+              <div className="flex gap-3 pt-3 border-t border-main/20">
+                <button 
+                  type="button"
+                  onClick={() => {
+                    const s = saleToEdit;
+                    setSaleToEdit(null);
+                    setSaleToDelete(s);
+                  }}
+                  className="p-3 bg-red-500/10 text-red-500 rounded-xl hover:bg-red-500 hover:text-white transition-all border border-red-500/20"
+                  title="Eliminar esta venta"
+                >
+                  <Trash2 size={16} />
+                </button>
+                <button 
+                  type="button"
+                  onClick={() => setSaleToEdit(null)}
+                  className="flex-1 bg-main/5 text-muted py-3 rounded-xl font-bold border border-main hover:bg-main/10 transition-all text-xs uppercase tracking-widest"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  type="submit"
+                  className="flex-[2] bg-accent text-white py-3 rounded-xl font-black tracking-widest hover:brightness-110 shadow-lg shadow-brand-gold-shadow uppercase text-xs transition-all flex items-center justify-center gap-2"
+                >
+                  <Check size={16} /> Guardar Cambios
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Modal Confirmar Eliminación de Compra */}
+      {purchaseToDelete && (
+        <div className="fixed inset-0 bg-main/90 backdrop-blur-xl z-[60] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-card w-full max-w-md rounded-3xl p-6 md:p-8 border border-red-500/30 shadow-2xl shadow-red-500/10 text-center"
+          >
+            <div className="w-16 h-16 bg-red-500/10 text-red-500 rounded-2xl flex items-center justify-center mx-auto mb-5 border border-red-500/20">
+              <Trash2 size={30} />
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-red-500 block mb-1">
+              Módulo de Compras
+            </span>
+            <h3 className="text-xl font-black mb-3 uppercase tracking-tight text-main">
+              ¿Eliminar Registro de Compra?
+            </h3>
+            
+            {(() => {
+              const prod = products.find(p => p.id === purchaseToDelete.productId);
+              const prodName = prod?.name || 'Producto';
+              const unit = prod?.unit || 'unidad';
+              const consumed = Math.max(0, purchaseToDelete.quantity - purchaseToDelete.remainingQuantity);
+              const totalAmount = purchaseToDelete.quantity * purchaseToDelete.unitCost;
+
+              return (
+                <div className="text-left bg-main/5 p-4 rounded-2xl border border-main/10 mb-6 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-muted font-bold">Producto:</span>
+                    <span className="font-black text-main uppercase">{prodName}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted font-bold">Proveedor:</span>
+                    <span className="font-bold text-main">{purchaseToDelete.supplier}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted font-bold">Fecha Compra:</span>
+                    <span className="font-medium text-main">{format(new Date(purchaseToDelete.entryDate), 'dd/MM/yyyy')}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted font-bold">Cantidad Comprada:</span>
+                    <span className="font-black text-accent">{purchaseToDelete.quantity} {unit}s</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted font-bold">Costo Total:</span>
+                    <span className="font-mono font-bold text-main">Bs. {totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  </div>
+
+                  {consumed > 0 && (
+                    <div className="mt-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400">
+                      <div className="flex items-center gap-1.5 font-black text-[11px] mb-1">
+                        <AlertTriangle size={14} /> ADVERTENCIA DE EXISTENCIA
+                      </div>
+                      <p className="text-[10px] leading-relaxed">
+                        Ya se han consumido o vendido <b>{consumed.toFixed(2)}</b> {unit}s de este lote. Quedan <b>{purchaseToDelete.remainingQuantity.toFixed(2)}</b> {unit}s en almacén que se descontarán del inventario.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            <div className="flex gap-3">
+              <button 
+                type="button"
+                onClick={() => setPurchaseToDelete(null)}
+                disabled={isDeletingMovement}
+                className="flex-1 bg-main/5 text-muted py-3.5 rounded-xl font-bold border border-main hover:bg-main/10 transition-all text-xs uppercase tracking-widest disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button 
+                type="button"
+                onClick={executeConfirmDeletePurchase}
+                disabled={isDeletingMovement}
+                className="flex-[1.5] bg-red-500 text-white py-3.5 rounded-xl font-black hover:bg-red-600 transition-all shadow-lg shadow-red-500/20 text-xs uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isDeletingMovement ? (
+                  <span>Eliminando...</span>
+                ) : (
+                  <>
+                    <Trash2 size={15} />
+                    <span>Eliminar Compra</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Modal Confirmar Eliminación en Lote de Compras */}
+      {bulkPurchasesToDelete && (
+        <div className="fixed inset-0 bg-main/90 backdrop-blur-xl z-[60] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-card w-full max-w-md rounded-3xl p-6 md:p-8 border border-red-500/30 shadow-2xl shadow-red-500/10 text-center"
+          >
+            <div className="w-16 h-16 bg-red-500/10 text-red-500 rounded-2xl flex items-center justify-center mx-auto mb-5 border border-red-500/20">
+              <Trash2 size={30} />
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-red-500 block mb-1">
+              Eliminación Masiva
+            </span>
+            <h3 className="text-xl font-black mb-3 uppercase tracking-tight text-main">
+              ¿Eliminar {bulkPurchasesToDelete.length} Compras?
+            </h3>
+            <p className="text-muted text-xs mb-6">
+              Esta acción eliminará de forma permanente los <b>{bulkPurchasesToDelete.length} registros</b> de compra seleccionados y actualizará las existencias del inventario.
+            </p>
+
+            <div className="flex gap-3">
+              <button 
+                type="button"
+                onClick={() => setBulkPurchasesToDelete(null)}
+                disabled={isDeletingMovement}
+                className="flex-1 bg-main/5 text-muted py-3.5 rounded-xl font-bold border border-main hover:bg-main/10 transition-all text-xs uppercase tracking-widest disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button 
+                type="button"
+                onClick={executeConfirmDeleteBulkPurchases}
+                disabled={isDeletingMovement}
+                className="flex-[1.5] bg-red-500 text-white py-3.5 rounded-xl font-black hover:bg-red-600 transition-all shadow-lg shadow-red-500/20 text-xs uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isDeletingMovement ? 'Eliminando...' : `Eliminar ${bulkPurchasesToDelete.length} Compras`}
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Modal Confirmar Eliminación de Venta */}
+      {saleToDelete && (
+        <div className="fixed inset-0 bg-main/90 backdrop-blur-xl z-[60] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-card w-full max-w-md rounded-3xl p-6 md:p-8 border border-red-500/30 shadow-2xl shadow-red-500/10 text-center"
+          >
+            <div className="w-16 h-16 bg-red-500/10 text-red-500 rounded-2xl flex items-center justify-center mx-auto mb-5 border border-red-500/20">
+              <Trash2 size={30} />
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-red-500 block mb-1">
+              Módulo de Ventas
+            </span>
+            <h3 className="text-xl font-black mb-3 uppercase tracking-tight text-main">
+              ¿Eliminar Registro de Venta?
+            </h3>
+
+            {(() => {
+              const prod = products.find(p => p.id === saleToDelete.productId);
+              const prodName = prod?.name || 'Producto';
+              const unit = prod?.unit || 'unidad';
+              const unitPrice = saleToDelete.salePrice || saleToDelete.unitCost || 0;
+              const totalAmount = saleToDelete.quantity * unitPrice;
+
+              return (
+                <div className="text-left bg-main/5 p-4 rounded-2xl border border-main/10 mb-6 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-muted font-bold">Producto:</span>
+                    <span className="font-black text-main uppercase">{prodName}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted font-bold">Cantidad Vendida:</span>
+                    <span className="font-black text-accent">{saleToDelete.quantity} {unit}s</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted font-bold">Precio Unitario:</span>
+                    <span className="font-mono font-bold text-main">Bs. {unitPrice.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted font-bold">Total Facturado:</span>
+                    <span className="font-mono font-black text-accent">Bs. {totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted font-bold">Fecha de Venta:</span>
+                    <span className="font-medium text-main">{format(new Date(saleToDelete.date), 'dd/MM/yyyy HH:mm')}</span>
+                  </div>
+                  {(saleToDelete.reference || saleToDelete.description) && (
+                    <div className="flex justify-between">
+                      <span className="text-muted font-bold">Referencia/Nota:</span>
+                      <span className="font-medium text-main truncate max-w-[200px]">{saleToDelete.reference || saleToDelete.description}</span>
+                    </div>
+                  )}
+
+                  {/* Restitución de Stock Info Box */}
+                  <div className="mt-3 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400">
+                    <div className="flex items-center gap-1.5 font-black text-[11px] mb-1">
+                      <PackageCheck size={14} /> RESTITUCIÓN AUTOMÁTICA DE STOCK
+                    </div>
+                    <p className="text-[10px] leading-relaxed">
+                      Al anular esta venta, las <b>{saleToDelete.quantity} {unit}s</b> serán <b>devueltas automáticamente al inventario físico</b> y el Kardex valorado se actualizará en tiempo real.
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="flex gap-3">
+              <button 
+                type="button"
+                onClick={() => setSaleToDelete(null)}
+                disabled={isDeletingMovement}
+                className="flex-1 bg-main/5 text-muted py-3.5 rounded-xl font-bold border border-main hover:bg-main/10 transition-all text-xs uppercase tracking-widest disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button 
+                type="button"
+                onClick={executeConfirmDeleteSale}
+                disabled={isDeletingMovement}
+                className="flex-[1.5] bg-red-500 text-white py-3.5 rounded-xl font-black hover:bg-red-600 transition-all shadow-lg shadow-red-500/20 text-xs uppercase tracking-widest disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isDeletingMovement ? (
+                  <span>Restituyendo...</span>
+                ) : (
+                  <>
+                    <Trash2 size={15} />
+                    <span>Eliminar y Restituir</span>
+                  </>
+                )}
               </button>
             </div>
           </motion.div>

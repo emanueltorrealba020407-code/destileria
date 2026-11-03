@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { format } from 'date-fns';
 import { 
   AlertTriangle, 
   CheckCircle2, 
@@ -26,6 +27,7 @@ interface TransactionConfirmationModalProps {
   isOpen: boolean;
   simulation: TransactionSimulationResult | null;
   movementDate?: string;
+  onDateChange?: (newDate: string) => void;
   operatorName: string;
   notes?: string;
   isSubmitting?: boolean;
@@ -38,6 +40,7 @@ export const TransactionConfirmationModal: React.FC<TransactionConfirmationModal
   isOpen,
   simulation,
   movementDate,
+  onDateChange,
   operatorName,
   notes,
   isSubmitting = false,
@@ -110,10 +113,16 @@ export const TransactionConfirmationModal: React.FC<TransactionConfirmationModal
           {/* Metadata banner */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-main/5 p-4 rounded-2xl border border-main/10 text-xs">
             <div className="flex items-center gap-2.5">
-              <Calendar size={16} className="text-accent" />
-              <div>
-                <div className="text-[9px] font-black text-muted uppercase tracking-wider">Fecha de Movimiento</div>
-                <div className="font-bold text-main">{movementDate || new Date().toISOString().split('T')[0]}</div>
+              <Calendar size={16} className="text-accent shrink-0" />
+              <div className="flex-1">
+                <div className="text-[9px] font-black text-muted uppercase tracking-wider mb-0.5">Fecha de Movimiento</div>
+                <div className="font-bold text-main font-mono text-xs">
+                  {movementDate ? (
+                    movementDate.includes('T') || movementDate.includes('-')
+                      ? format(new Date(movementDate), 'dd/MM/yyyy')
+                      : movementDate
+                  ) : format(new Date(), 'dd/MM/yyyy')}
+                </div>
               </div>
             </div>
             <div className="flex items-center gap-2.5">
