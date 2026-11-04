@@ -1833,7 +1833,7 @@ export default function App() {
       addNotification({
         type: 'SUCCESS',
         title: 'Kardex Exportado a Excel',
-        message: `Se ha generado el libro Excel profesional de Tarjeta Kardex con ${entriesToExport.length} movimientos valorados al Costo Promedio al momento de salida.`,
+        message: `Se ha generado el libro Excel profesional de Tarjeta Kardex con ${entriesToExport.length} movimientos valorados con el Método PEPS.`,
         linkTab: 'kardex'
       });
     } catch (err) {
@@ -1865,14 +1865,14 @@ export default function App() {
           specificProduct: prod,
           includeSummarySheet: true,
           includeBatchesSheet: true,
-          fileNamePrefix: `kardex_promedio_${prod.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}`
+          fileNamePrefix: `kardex_peps_${prod.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}`
         }
       );
 
       addNotification({
         type: 'SUCCESS',
         title: 'Kardex de Producto Exportado',
-        message: `Se ha generado el archivo Excel de Tarjeta Kardex para ${prod.name} valorado al Costo Promedio al momento de salida.`,
+        message: `Se ha generado el archivo Excel de Tarjeta Kardex para ${prod.name} valorado con el Método PEPS.`,
         linkTab: 'kardex'
       });
     } catch (err) {
@@ -2990,9 +2990,18 @@ export default function App() {
         <div className="hidden lg:flex sticky top-0 bg-main/80 backdrop-blur-md px-12 py-5 items-center justify-between z-40 border-b border-main/5">
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
-              <h2 className="text-xs font-black uppercase text-muted tracking-[0.2em]">Dashboard</h2>
+              <h2 className="text-xs font-black uppercase text-muted tracking-[0.2em]">Panel Principal</h2>
               <ChevronRight size={12} className="text-muted/30" />
-              <span className="text-xs font-black uppercase text-accent tracking-[0.2em]">{activeTab}</span>
+              <span className="text-xs font-black uppercase text-accent tracking-[0.2em]">
+                {activeTab === 'dashboard' ? 'Panel de Control' :
+                 activeTab === 'inventory' ? 'Inventario' :
+                 activeTab === 'purchases' ? 'Compras' :
+                 activeTab === 'sales' ? 'Ventas' :
+                 activeTab === 'kardex' ? 'Tarjeta Kardex' :
+                 activeTab === 'people' ? 'Personal' :
+                 activeTab === 'configuration' ? 'Configuración' :
+                 activeTab === 'audit' ? 'Trazabilidad' : activeTab}
+              </span>
             </div>
 
             {/* Company / Workspace Switcher */}
@@ -3020,11 +3029,6 @@ export default function App() {
                 </div>
               </div>
             )}
-
-            <div className="hidden xl:flex items-center gap-2 px-3 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 text-[10px] font-bold">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span>Firebase Conectado • {products.length} productos • {batches.length} lotes</span>
-            </div>
           </div>
           <div className="flex items-center gap-6">
             <button 
@@ -3353,7 +3357,7 @@ export default function App() {
                     </span>
                   </div>
                   <p className="text-muted text-[10px] md:text-xs uppercase tracking-widest font-bold mt-1">
-                    Gestión Central de Almacén • {products.length} productos registrados • {batches.length} lotes en Firebase
+                    Gestión Central de Almacén • {products.length} productos registrados • {batches.length} lotes en sistema
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
@@ -4431,12 +4435,12 @@ export default function App() {
                     </span>
                   </div>
                   <p className="text-muted text-xs font-bold uppercase tracking-wider mb-3">
-                    Control y Valoración Contable al Costo Promedio al momento de salida exclusivo para Almacén de Producto Terminado
+                    Control y Valoración Contable con Método PEPS exclusivo para Almacén de Producto Terminado
                   </p>
                   <div className="flex flex-wrap gap-4 md:gap-6 text-[10px] font-black uppercase tracking-[0.2em]">
                       <div className="flex items-center gap-2">
                           <span className="text-muted">Método:</span>
-                          <span className="text-accent">Costo Promedio Ponderado (al momento de salida)</span>
+                          <span className="text-accent">Método PEPS</span>
                       </div>
                       <span className="opacity-20 text-main font-thin">|</span>
                       <div className="flex items-center gap-2">
@@ -4477,7 +4481,7 @@ export default function App() {
                       </button>
                       <button 
                         onClick={() => handleExportXLSX('all')}
-                        title="Genera el libro contable de Tarjeta Kardex valuado al costo promedio de todos los productos terminados"
+                        title="Genera el libro contable de Tarjeta Kardex valuado con Método PEPS de todos los productos terminados"
                         className="flex items-center gap-2 bg-sidebar border border-main px-4 py-3 rounded-xl font-black uppercase tracking-widest text-[10px] text-muted hover:text-main hover:bg-main/5 transition-all shadow-sm active:scale-95"
                       >
                         <Download size={14} />
@@ -4604,7 +4608,7 @@ export default function App() {
                     <ClipboardList size={18} className="text-accent" />
                     <div>
                       <span className="text-[10px] md:text-xs font-black tracking-[0.2em] md:tracking-[0.4em] text-muted uppercase block">
-                        Consolidado Tarjeta Kardex • Costo Promedio al momento de salida
+                        Consolidado Tarjeta Kardex • Método PEPS
                       </span>
                       <span className="text-[9px] font-bold text-emerald-500 uppercase tracking-widest">
                         Almacén de Producto Terminado
@@ -4646,7 +4650,7 @@ export default function App() {
                         <th className="px-8 py-6" rowSpan={2}>Producto Terminado</th>
                         <th className="px-8 py-6" rowSpan={2}>Referencia</th>
                         <th className="px-8 py-6 text-center border-l border-main/10 bg-black/10 hover:bg-black/20 transition-colors" colSpan={3}>Operación Entrada (Producción/Altas)</th>
-                        <th className="px-8 py-6 text-center border-l border-main/10" colSpan={4}>Operación Salida (Costo de Ventas al Costo Promedio)</th>
+                        <th className="px-8 py-6 text-center border-l border-main/10" colSpan={4}>Operación Salida (Costo de Ventas - Método PEPS)</th>
                         <th className="px-8 py-6 text-center border-l border-main/10" rowSpan={2}>Responsable</th>
                         <th className="px-8 py-6 text-center border-l border-main/10 bg-black/10 hover:bg-black/20 transition-colors" colSpan={3}>Saldos (del Producto)</th>
                         </tr>
@@ -4655,11 +4659,11 @@ export default function App() {
                         <th className="px-8 py-3 text-center opacity-70">Cost.U</th>
                         <th className="px-8 py-3 text-center opacity-70">Val.Tot</th>
                         <th className="px-8 py-3 border-l border-main/10 text-center opacity-70">Cant.</th>
-                        <th className="px-8 py-3 text-center opacity-70" title="Costo promedio ponderado al momento de salida">Cost.Prom</th>
+                        <th className="px-8 py-3 text-center opacity-70" title="Costo unitario por lote según método PEPS">Cost.PEPS</th>
                         <th className="px-8 py-3 text-center opacity-70">Val.Tot</th>
                         <th className="px-8 py-3 text-center opacity-70 border-l border-main/5 text-accent">P. Venta</th>
                         <th className="px-8 py-3 border-l border-main/10 text-center opacity-70">Cant.</th>
-                        <th className="px-8 py-3 text-center opacity-70">Prom.P</th>
+                        <th className="px-8 py-3 text-center opacity-70" title="Costo unitario PEPS">Cost.U</th>
                         <th className="px-8 py-3 text-center opacity-70">Patrimonio</th>
                         </tr>
                     </thead>
@@ -5527,7 +5531,7 @@ export default function App() {
                     <div className="space-y-3 mb-2 p-4 bg-sidebar/50 rounded-2xl border border-main border-dashed">
                       <div className="flex justify-between items-center">
                         <span className="text-[10px] font-black uppercase tracking-widest text-muted">Lista de Compra</span>
-                        <span className="text-[9px] font-black text-accent bg-accent/10 px-2 py-0.5 rounded-full">{purchaseItems.length} items</span>
+                        <span className="text-[9px] font-black text-accent bg-accent/10 px-2 py-0.5 rounded-full">{purchaseItems.length} artículos</span>
                       </div>
                       <div className="space-y-2 max-h-[120px] overflow-y-auto pr-2 custom-scrollbar">
                         {purchaseItems.map((item, idx) => (
@@ -5564,7 +5568,7 @@ export default function App() {
                           <ShoppingCart size={13} />
                           Productos en la Venta
                         </span>
-                        <span className="text-[9px] font-black text-accent bg-accent/10 px-2 py-0.5 rounded-full">{saleItems.length} items</span>
+                        <span className="text-[9px] font-black text-accent bg-accent/10 px-2 py-0.5 rounded-full">{saleItems.length} artículos</span>
                       </div>
                       <div className="space-y-2 max-h-[130px] overflow-y-auto pr-2 custom-scrollbar">
                         {saleItems.map((item, idx) => (
@@ -5601,7 +5605,7 @@ export default function App() {
                           <Boxes size={13} />
                           Productos en la Salida
                         </span>
-                        <span className="text-[9px] font-black text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded-full">{exitItems.length} items</span>
+                        <span className="text-[9px] font-black text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded-full">{exitItems.length} artículos</span>
                       </div>
                       <div className="space-y-2 max-h-[130px] overflow-y-auto pr-2 custom-scrollbar">
                         {exitItems.map((item, idx) => (
@@ -5865,9 +5869,9 @@ export default function App() {
                       {showModal === 'purchase' 
                         ? (purchaseItems.length > 0 ? `TERMINAR COMPRA (${purchaseItems.length + (selectedProductId && formData.quantity > 0 ? 1 : 0)})` : 'CONFIRMAR COMPRA') 
                         : showModal === 'sale'
-                        ? (saleItems.length > 0 ? `REVISAR IMPACTO (${saleItems.length + (selectedProductId && formData.quantity > 0 ? 1 : 0)} ITEMS)` : 'REVISAR IMPACTO EN STOCK')
+                        ? (saleItems.length > 0 ? `REVISAR IMPACTO (${saleItems.length + (selectedProductId && formData.quantity > 0 ? 1 : 0)} PRODUCTOS)` : 'REVISAR IMPACTO EN STOCK')
                         : showModal === 'exit'
-                        ? (exitItems.length > 0 ? `REVISAR IMPACTO (${exitItems.length + (selectedProductId && formData.quantity > 0 ? 1 : 0)} ITEMS)` : 'REVISAR IMPACTO EN STOCK')
+                        ? (exitItems.length > 0 ? `REVISAR IMPACTO (${exitItems.length + (selectedProductId && formData.quantity > 0 ? 1 : 0)} PRODUCTOS)` : 'REVISAR IMPACTO EN STOCK')
                         : 'CONFIRMAR REGISTRO'}
                     </button>
                   </div>
@@ -5924,7 +5928,7 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <h3 className="text-xl md:text-2xl font-black uppercase tracking-tight text-accent flex items-center gap-2">
                       <ClipboardList size={22} />
-                      {isFinished ? 'TARJETA KARDEX VALORADA (COSTO PROMEDIO EN SALIDA)' : 'HISTORIAL DE MOVIMIENTOS'}
+                      {isFinished ? 'TARJETA KARDEX VALORADA (MÉTODO PEPS)' : 'HISTORIAL DE MOVIMIENTOS'}
                     </h3>
                     {isFinished && (
                       <span className="bg-emerald-500/10 text-emerald-500 border border-emerald-500/30 text-[9px] font-black uppercase px-2.5 py-0.5 rounded-full tracking-wider flex items-center gap-1 shadow-sm">
@@ -5980,7 +5984,7 @@ export default function App() {
                 <div className="mb-4 p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-blue-400 text-xs font-medium flex items-center gap-2">
                   <span>ℹ️</span>
                   <span>
-                    La <b>Tarjeta Kardex Contable Valuada</b> oficial está enfocada en <b>Productos Terminados</b> valorados al costo promedio de salida. A continuación se detalla el control físico de entradas y consumos de esta materia prima o insumo.
+                    La <b>Tarjeta Kardex Contable Valuada</b> oficial está enfocada en <b>Productos Terminados</b> valorados con el método PEPS. A continuación se detalla el control físico de entradas y consumos de esta materia prima o insumo.
                   </span>
                 </div>
               )}
@@ -6021,10 +6025,10 @@ export default function App() {
 
                   <div className="p-3.5 rounded-2xl bg-sidebar border border-main">
                     <span className="text-[9px] font-black uppercase text-accent tracking-wider block mb-1">
-                      Costo Promedio Ponderado
+                      Método de Valuación
                     </span>
                     <span className="text-base md:text-lg font-black text-accent">
-                      Bs. {currentAvgCost.toFixed(2)}
+                      Método PEPS
                     </span>
                   </div>
                 </div>
@@ -6040,8 +6044,8 @@ export default function App() {
                           <th className="px-4 py-3" rowSpan={2}>Fecha/Hora</th>
                           <th className="px-4 py-3" rowSpan={2}>Referencia / Motivo</th>
                           <th className="px-4 py-3 text-center border-l border-main/10 bg-black/5" colSpan={3}>Entradas (Producción)</th>
-                          <th className="px-4 py-3 text-center border-l border-main/10" colSpan={3}>Salidas (Costo Promedio)</th>
-                          <th className="px-4 py-3 text-center border-l border-main/10 bg-black/5" colSpan={3}>Saldos Valorados (Costo Promedio)</th>
+                          <th className="px-4 py-3 text-center border-l border-main/10" colSpan={3}>Salidas (Método PEPS)</th>
+                          <th className="px-4 py-3 text-center border-l border-main/10 bg-black/5" colSpan={3}>Saldos Valorados (Método PEPS)</th>
                           <th className="px-4 py-3 text-right border-l border-main/10" rowSpan={2}>Responsable</th>
                         </tr>
                         <tr className="border-t border-main/10 bg-main/5">
@@ -6049,10 +6053,10 @@ export default function App() {
                           <th className="px-3 py-2 text-center opacity-70">Cost.U</th>
                           <th className="px-3 py-2 text-center opacity-70">Total</th>
                           <th className="px-3 py-2 border-l border-main/10 text-center opacity-70">Cant.</th>
-                          <th className="px-3 py-2 text-center opacity-70" title="Costo promedio ponderado al momento de salida">C. Prom.</th>
+                          <th className="px-3 py-2 text-center opacity-70" title="Costo unitario por lote según método PEPS">C. PEPS</th>
                           <th className="px-3 py-2 text-center opacity-70">Total</th>
                           <th className="px-3 py-2 border-l border-main/10 text-center opacity-70">Cant.</th>
-                          <th className="px-3 py-2 text-center opacity-70">Prom.P</th>
+                          <th className="px-3 py-2 text-center opacity-70" title="Costo unitario PEPS">Cost.U</th>
                           <th className="px-3 py-2 text-center opacity-70 text-accent">Valor Bs.</th>
                         </tr>
                       </>

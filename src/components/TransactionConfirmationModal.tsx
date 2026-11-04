@@ -327,7 +327,7 @@ export const TransactionConfirmationModal: React.FC<TransactionConfirmationModal
                       <div className="flex flex-wrap items-center justify-between text-xs font-bold pt-2 border-t border-main/10">
                         <div className="text-muted">
                           Costo PEPS: <span className="font-black text-main">Bs. {item.totalCost.toFixed(2)}</span>
-                          <span className="text-[10px] text-muted/70 ml-1">(Promedio: Bs. {item.averageUnitCost.toFixed(2)}/u)</span>
+                          <span className="text-[10px] text-muted/70 ml-1">(Unit. PEPS: Bs. {item.averageUnitCost.toFixed(2)}/u)</span>
                         </div>
 
                         {isSale && item.salePrice !== undefined && (

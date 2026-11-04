@@ -124,10 +124,10 @@ export function exportKardexWorkbook(
 
   const kardexSheetAOA: any[][] = [
     // Header Banner
-    [`${company.toUpperCase()} - SISTEMA DE CONTROL DE INVENTARIOS (COSTO PROMEDIO)`],
+    [`${company.toUpperCase()} - SISTEMA DE CONTROL DE INVENTARIOS (MÉTODO PEPS)`],
     [isSingleProduct 
       ? `TARJETA KARDEX INDIVIDUAL VALORADA - ${options.specificProduct?.name.toUpperCase()}${options.specificProduct?.type === 'producto terminado' ? ' (PRODUCTO TERMINADO)' : ''}`
-      : 'LIBRO TARJETA KARDEX VALORADO • COSTO PROMEDIO AL MOMENTO DE SALIDA'],
+      : 'LIBRO TARJETA KARDEX VALORADO • MÉTODO PEPS'],
     [`Criterios del Reporte: ${filterText}`],
     [`Fecha y Hora de Emisión: ${emissionDateStr} | Responsable: ${user} | Registros: ${kardexEntries.length}`],
     [
@@ -141,7 +141,7 @@ export function exportKardexWorkbook(
     [
       'DATOS DEL MOVIMIENTO', '', '', '', '',
       'ENTRADAS / INGRESOS (PRODUCCIÓN)', '', '',
-      'SALIDAS / EGRESOS (COSTO PROMEDIO)', '', '', '',
+      'SALIDAS / EGRESOS (MÉTODO PEPS)', '', '', '',
       'SALDOS VALORADOS EN EXISTENCIA', '', '',
       'AUDITORÍA'
     ],
@@ -157,11 +157,11 @@ export function exportKardexWorkbook(
       'Costo Unit. (Bs)',
       'Total Ingreso (Bs)',
       'Cantidad Salida',
-      'Costo Promedio Salida (Bs)',
+      'Costo Salida PEPS (Bs)',
       'Total Salida (Bs)',
       'Precio Venta (Bs)',
       'Cantidad Saldo',
-      'Costo Unit. Promedio (Bs)',
+      'Costo Unit. PEPS (Bs)',
       'Total Saldo (Bs)',
       'Responsable'
     ]
@@ -262,7 +262,7 @@ export function exportKardexWorkbook(
 
     const inventorySheetAOA: any[][] = [
       [`${company.toUpperCase()} - RESUMEN CONSOLIDADO DE INVENTARIO`],
-      [`Emisión: ${emissionDateStr} | Método de Valuación: Costo Promedio al momento de salida`],
+      [`Emisión: ${emissionDateStr} | Método de Valuación: Método PEPS`],
       [],
       [
         'Código / ID',
@@ -274,7 +274,7 @@ export function exportKardexWorkbook(
         'Existencia Actual',
         'Estado de Stock',
         'Valor Total en Inventario (Bs)',
-        'Costo Promedio (Bs)',
+        'Costo PEPS (Bs)',
         'Lotes Activos',
         'Total Entradas Históricas',
         'Total Salidas Históricas'
