@@ -12,7 +12,7 @@ import {
 } from 'firebase/auth';
 import { auth } from '../lib/firebase';
 import { dbService } from './db';
-import { Account, AccountType } from '../types';
+import { Account, AccountType, AreaPermission } from '../types';
 
 const googleProvider = new GoogleAuthProvider();
 
@@ -21,9 +21,13 @@ export const authService = {
     const userCredential = await signInWithPopup(auth, googleProvider);
     const firebaseUser = userCredential.user;
     
-    const email = firebaseUser.email || '';
+    const email = (firebaseUser.email || '').trim().toLowerCase();
     let profile = await dbService.getUserProfile(firebaseUser.uid);
     if (profile && profile.type === 'COMPANY') {
+      if (profile.linkedCompanyId !== firebaseUser.uid) {
+        profile.linkedCompanyId = firebaseUser.uid;
+        await dbService.setUserProfile(profile);
+      }
       return profile;
     }
 
@@ -35,21 +39,21 @@ export const authService = {
     
     if (!profile) {
       // Create a profile if it doesn't exist
-      const email = firebaseUser.email || '';
-      const matchingTeam = await dbService.findTeamMemberByEmail(email);
-
       const type = matchingTeam ? 'USER' : (desiredType || 'USER');
-      const name = firebaseUser.displayName || 'Usuario Google';
+      const name = firebaseUser.displayName || email.split('@')[0] || 'Usuario Google';
       
-      let finalCompanyName = companyName || 'Personal';
+      let finalCompanyName = companyName || (type === 'COMPANY' ? name : 'Personal');
       if (matchingTeam) {
         const comp = await dbService.getCompany(matchingTeam.companyId);
         finalCompanyName = comp?.name || 'Empresa Vinculada';
       }
 
-      const companyId = type === 'COMPANY' ? firebaseUser.uid : (matchingTeam ? matchingTeam.companyId : '');
+      // STRICT ISOLATION BY EMAIL:
+      // A company is ALWAYS its own independent space (firebaseUser.uid)
+      // A user is linked to a company ONLY IF invited by that exact email, otherwise own personal space
+      const companyId = type === 'COMPANY' ? firebaseUser.uid : (matchingTeam ? matchingTeam.companyId : firebaseUser.uid);
       const role = matchingTeam ? matchingTeam.member.role : 'ADMIN';
-      const areas = matchingTeam ? matchingTeam.member.areas : [];
+      const areas: AreaPermission[] = matchingTeam ? matchingTeam.member.areas : ['INVENTARIO', 'PRODUCCION', 'REPORTES', 'CONFIGURACION'];
 
       profile = {
         id: firebaseUser.uid,
@@ -66,19 +70,20 @@ export const authService = {
 
       // If it's a company, create the company doc too
       if (type === 'COMPANY') {
-        await dbService.createCompany(firebaseUser.uid, finalCompanyName, firebaseUser.uid);
+        await dbService.createCompany(firebaseUser.uid, finalCompanyName, firebaseUser.uid, email);
       }
     } else {
-      // If profile already exists but is empty of company ID, sync with any matching team member
-      if (profile.type === 'USER' && (!profile.linkedCompanyId || profile.linkedCompanyId === '')) {
-        const email = firebaseUser.email || profile.email;
-        const matchingTeam = await dbService.findTeamMemberByEmail(email);
+      // If profile already exists, sync with matching team member ONLY if found by exact email
+      if (profile.type === 'USER') {
         if (matchingTeam) {
           profile.linkedCompanyId = matchingTeam.companyId;
           profile.role = matchingTeam.member.role;
           profile.areas = matchingTeam.member.areas;
           const comp = await dbService.getCompany(matchingTeam.companyId);
           profile.companyName = comp?.name || 'Empresa Vinculada';
+          await dbService.setUserProfile(profile);
+        } else if (!profile.linkedCompanyId) {
+          profile.linkedCompanyId = profile.id;
           await dbService.setUserProfile(profile);
         }
       }
@@ -88,13 +93,22 @@ export const authService = {
   },
 
   async register(email: string, pass: string, name: string, type: AccountType, companyName?: string) {
-    const userCredential = await createUserWithEmailAndPassword(auth, email, pass);
+    const normEmail = email.trim().toLowerCase();
+
+    // Verify if this email is already registered in Firestore
+    const existingCred = await dbService.getUserCredential(normEmail);
+    const existingProfile = await dbService.findUserProfileByEmail(normEmail);
+    if (existingCred || existingProfile) {
+      throw new Error('Este correo electrónico ya está registrado en el sistema. Debe iniciar sesión o usar otro correo.');
+    }
+
+    const userCredential = await createUserWithEmailAndPassword(auth, normEmail, pass);
     const firebaseUser = userCredential.user;
 
     try {
       let matchingTeam = null;
       if (type !== 'COMPANY') {
-        matchingTeam = await dbService.findTeamMemberByEmail(email);
+        matchingTeam = await dbService.findTeamMemberByEmail(normEmail);
         if (matchingTeam && matchingTeam.member.status === 'inactive') {
           await firebaseUser.delete();
           await signOut(auth);
@@ -104,21 +118,25 @@ export const authService = {
 
       const actualType = matchingTeam ? 'USER' : type;
       
-      let finalCompanyName = companyName || 'Personal';
+      let finalCompanyName = companyName || (actualType === 'COMPANY' ? name : 'Personal');
       if (matchingTeam) {
         const comp = await dbService.getCompany(matchingTeam.companyId);
         finalCompanyName = comp?.name || 'Empresa Vinculada';
       }
 
-      const companyId = actualType === 'COMPANY' ? firebaseUser.uid : (matchingTeam ? matchingTeam.companyId : '');
+      // STRICT ISOLATION BY EMAIL:
+      // A company is ALWAYS its own independent space (firebaseUser.uid).
+      // Even if another company has the same name, they are separate because identity is strictly by email.
+      // A user is linked to a company ONLY IF invited by that exact email, otherwise own personal space.
+      const companyId = actualType === 'COMPANY' ? firebaseUser.uid : (matchingTeam ? matchingTeam.companyId : firebaseUser.uid);
       const role = matchingTeam ? matchingTeam.member.role : 'ADMIN';
-      const areas = matchingTeam ? matchingTeam.member.areas : [];
+      const areas: AreaPermission[] = matchingTeam ? matchingTeam.member.areas : ['INVENTARIO', 'PRODUCCION', 'REPORTES', 'CONFIGURACION'];
 
       const profile: Account = {
         id: firebaseUser.uid,
         type: actualType,
         name,
-        email,
+        email: normEmail,
         companyName: finalCompanyName,
         linkedCompanyId: companyId,
         role,
@@ -129,11 +147,11 @@ export const authService = {
       await dbService.setUserProfile(profile);
 
       // Save user credential to Firestore for fast lookups & verified password state
-      await dbService.saveUserCredential(email, pass);
+      await dbService.saveUserCredential(normEmail, pass);
 
       // If it's a company, create the company doc too
       if (actualType === 'COMPANY') {
-        await dbService.createCompany(firebaseUser.uid, companyName || name, firebaseUser.uid);
+        await dbService.createCompany(firebaseUser.uid, finalCompanyName, firebaseUser.uid, normEmail);
       }
 
       return profile;
@@ -172,6 +190,10 @@ export const authService = {
 
       let profile = await dbService.getUserProfile(userCredential.user.uid);
       if (profile && profile.type === 'COMPANY') {
+        if (profile.linkedCompanyId !== userCredential.user.uid) {
+          profile.linkedCompanyId = userCredential.user.uid;
+          await dbService.setUserProfile(profile);
+        }
         return profile;
       }
 
@@ -182,9 +204,9 @@ export const authService = {
       }
       
       if (!profile) {
-        const companyId = matchingTeam ? matchingTeam.companyId : '';
+        const companyId = matchingTeam ? matchingTeam.companyId : userCredential.user.uid;
         const role = matchingTeam ? matchingTeam.member.role : 'OPERATOR';
-        const areas = matchingTeam ? matchingTeam.member.areas : [];
+        const areas: AreaPermission[] = matchingTeam ? matchingTeam.member.areas : ['INVENTARIO'];
         
         let finalCompanyName = 'Personal';
         if (matchingTeam) {
@@ -203,13 +225,16 @@ export const authService = {
           areas: areas
         };
         await dbService.setUserProfile(profile);
-      } else if (profile.type === 'USER' && (!profile.linkedCompanyId || profile.linkedCompanyId === '')) {
+      } else if (profile.type === 'USER') {
         if (matchingTeam) {
           profile.linkedCompanyId = matchingTeam.companyId;
           profile.role = matchingTeam.member.role;
           profile.areas = matchingTeam.member.areas;
           const comp = await dbService.getCompany(matchingTeam.companyId);
           profile.companyName = comp?.name || 'Empresa Vinculada';
+          await dbService.setUserProfile(profile);
+        } else if (!profile.linkedCompanyId) {
+          profile.linkedCompanyId = profile.id;
           await dbService.setUserProfile(profile);
         }
       }

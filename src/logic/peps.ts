@@ -18,9 +18,10 @@ export function processExit(
   transactions: Transaction[],
   totalCost: number 
 } {
+  const targetProdId = (productId || '').trim().toLowerCase();
   // Sort batches by entry date (oldest first) with deterministic ID tie-breaker
   const productBatches = allBatches
-    .filter(b => b.productId === productId && b.remainingQuantity > 0)
+    .filter(b => (b.productId || '').trim().toLowerCase() === targetProdId && (Number(b.remainingQuantity) || 0) > 0)
     .sort((a, b) => {
       const timeDiff = new Date(a.entryDate).getTime() - new Date(b.entryDate).getTime();
       return timeDiff !== 0 ? timeDiff : a.id.localeCompare(b.id);
@@ -37,27 +38,33 @@ export function processExit(
     : new Date().toISOString();
 
   for (const batch of productBatches) {
-    if (remainingToProcess <= 0) break;
+    if (remainingToProcess <= 1e-7) break;
 
-    const takeQty = Math.min(batch.remainingQuantity, remainingToProcess);
+    const currentBatchRem = Number(batch.remainingQuantity) || 0;
+    const takeQty = Math.min(currentBatchRem, remainingToProcess);
     const batchIndex = batchesToUpdate.findIndex(b => b.id === batch.id);
     
-    // Update batch remaining quantity with zero-clamp
-    const newRemaining = Math.max(0, batch.remainingQuantity - takeQty);
-    batchesToUpdate[batchIndex] = {
-      ...batch,
-      remainingQuantity: newRemaining
-    };
+    // Update batch remaining quantity with zero-clamp and precision rounding
+    const diff = currentBatchRem - takeQty;
+    const newRemaining = diff <= 1e-7 ? 0 : Math.round(diff * 10000) / 10000;
+    if (batchIndex !== -1) {
+      batchesToUpdate[batchIndex] = {
+        ...batch,
+        remainingQuantity: newRemaining
+      };
+    }
 
-    totalCost += takeQty * batch.unitCost;
-    remainingToProcess = Math.max(0, remainingToProcess - takeQty);
+    const batchUnitCost = Number(batch.unitCost) || 0;
+    totalCost += takeQty * batchUnitCost;
+    const remDiff = remainingToProcess - takeQty;
+    remainingToProcess = remDiff <= 1e-7 ? 0 : Math.round(remDiff * 10000) / 10000;
 
     newTransactions.push({
       id: crypto.randomUUID(),
-      productId: productId,
+      productId: batch.productId,
       batchId: batch.id,
       type: type,
-      quantity: takeQty,
+      quantity: Math.round(takeQty * 10000) / 10000,
       unitCost: batch.unitCost,
       salePrice: salePrice,
       date: txDate,
@@ -69,7 +76,7 @@ export function processExit(
     });
   }
 
-  if (remainingToProcess > 0) {
+  if (remainingToProcess > 1e-5) {
     throw new Error('Stock insuficiente para realizar la salida solicitada.');
   }
 

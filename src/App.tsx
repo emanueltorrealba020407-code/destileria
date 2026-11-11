@@ -46,7 +46,10 @@ import {
   PackageCheck,
   Layers,
   Sparkles,
-  TrendingUp
+  TrendingUp,
+  Wine,
+  FlaskConical,
+  Droplets
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -174,6 +177,8 @@ export default function App() {
     notes: '',
     productionDate: new Date().toISOString().split('T')[0]
   });
+  const [isExecutingProduction, setIsExecutingProduction] = useState(false);
+  const [productionError, setProductionError] = useState<string | null>(null);
   const [productRecipe, setProductRecipe] = useState<RecipeItem[]>([]);
   const [productPackaging, setProductPackaging] = useState<PackagingConfig>({
     packagingType: 'ninguno',
@@ -181,6 +186,27 @@ export default function App() {
     unitsPerBundle: 0
   });
   const [showLowStockOnly, setShowLowStockOnly] = useState(false);
+  const [showAlcoholOnly, setShowAlcoholOnly] = useState(false);
+
+  // Helper to identify alcohol raw materials and products
+  const isAlcoholProduct = (prod?: Product | null): boolean => {
+    if (!prod) return false;
+    const name = prod.name.toLowerCase();
+    const cat = prod.category.toLowerCase();
+    const desc = (prod.description || '').toLowerCase();
+    return (
+      name.includes('alcohol') ||
+      cat.includes('alcohol') ||
+      desc.includes('alcohol') ||
+      name.includes('etanol') ||
+      name.includes('aguardiente') ||
+      name.includes('destil') ||
+      name.includes('96') ||
+      name.includes('27') ||
+      name.includes('diluid') ||
+      (prod.unit === 'litro' && (prod.type === 'materia prima' || prod.type === 'producción' || prod.type === 'producto terminado' || cat.includes('materia prima') || cat.includes('producción')) && (name.includes('alc') || name.includes('licor') || name.includes('caña') || name.includes('espíritu')))
+    );
+  };
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [kardexPresentationMode, setKardexPresentationMode] = useState(false);
   const [batchToEdit, setBatchToEdit] = useState<Batch | null>(null);
@@ -241,12 +267,8 @@ export default function App() {
   useEffect(() => {
     const unsub = authService.onAuthChanged(async (firebaseUser) => {
       if (firebaseUser) {
-        const email = firebaseUser.email || '';
+        const email = (firebaseUser.email || '').trim().toLowerCase();
         let profile = await dbService.getUserProfile(firebaseUser.uid);
-
-        // Fetch all existing companies in Firestore to enable workspace switching & auto-discovery
-        const allCompanies = await dbService.listCompaniesWithStats();
-        setAvailableCompanies(allCompanies);
 
         let matchingTeam = null;
         if (!profile || profile.type !== 'COMPANY') {
@@ -258,21 +280,19 @@ export default function App() {
           }
         }
 
-        // Find primary company with real saved data (e.g. "prueba" or "destilera")
-        const primaryCompanyWithData = allCompanies.find(c => c.productCount > 0);
-
         if (!profile) {
-          const companyId = matchingTeam 
-            ? matchingTeam.companyId 
-            : (primaryCompanyWithData ? primaryCompanyWithData.id : firebaseUser.uid);
           const type: AccountType = matchingTeam ? 'USER' : 'COMPANY';
+          // STRICT SEPARATION:
+          // A company is ALWAYS its own UID. It never connects to other companies even if names match!
+          // A user only connects to a company if matchingTeam was found by their EXACT email address.
+          const companyId = matchingTeam ? matchingTeam.companyId : firebaseUser.uid;
           const role = matchingTeam ? matchingTeam.member.role : 'ADMIN';
           const areas = matchingTeam ? matchingTeam.member.areas : ['INVENTARIO', 'PRODUCCION', 'REPORTES', 'CONFIGURACION'];
           
-          let companyName = primaryCompanyWithData ? primaryCompanyWithData.name : 'Mi Empresa';
+          let companyName = 'Mi Empresa';
           if (matchingTeam) {
             const comp = await dbService.getCompany(matchingTeam.companyId);
-            companyName = comp?.name || companyName;
+            companyName = comp?.name || 'Empresa Vinculada';
           }
 
           profile = {
@@ -287,51 +307,46 @@ export default function App() {
           };
           await dbService.setUserProfile(profile);
           if (type === 'COMPANY') {
-            await dbService.createCompany(firebaseUser.uid, companyName, firebaseUser.uid);
+            await dbService.createCompany(firebaseUser.uid, companyName, firebaseUser.uid, email);
           }
         } else {
-          // If profile exists, check if user's linkedCompanyId is empty or points to an empty company
-          // while existing companies have saved data
-          const currentLinkedId = profile.linkedCompanyId;
-          const currentHasProducts = currentLinkedId ? await dbService.hasCompanyProducts(currentLinkedId) : false;
-
-          if ((!currentLinkedId || !currentHasProducts) && primaryCompanyWithData) {
-            console.log('Connecting user to existing saved company:', primaryCompanyWithData.name, primaryCompanyWithData.id);
-            profile = {
-              ...profile,
-              linkedCompanyId: primaryCompanyWithData.id,
-              companyName: primaryCompanyWithData.name
-            };
-            await dbService.setUserProfile(profile);
-          } else if (profile.type === 'COMPANY') {
-            if (!profile.linkedCompanyId) {
+          // If profile is COMPANY: ALWAYS enforce linkedCompanyId is strictly its own UID!
+          // Never allow connection to another company!
+          if (profile.type === 'COMPANY') {
+            if (profile.linkedCompanyId !== profile.id) {
               profile = { ...profile, linkedCompanyId: profile.id };
               await dbService.setUserProfile(profile);
             }
           } else if (profile.type === 'USER') {
-            const currentEmail = firebaseUser.email || profile.email;
-            const currentTeam = await dbService.findTeamMemberByEmail(currentEmail);
-            if (currentTeam) {
-              const comp = await dbService.getCompany(currentTeam.companyId);
+            // A user ONLY connects to a company if invited to team by their EXACT email!
+            if (matchingTeam) {
+              const comp = await dbService.getCompany(matchingTeam.companyId);
               const companyName = comp?.name || profile.companyName;
               
               if (
-                profile.linkedCompanyId !== currentTeam.companyId ||
-                profile.role !== currentTeam.member.role ||
+                profile.linkedCompanyId !== matchingTeam.companyId ||
+                profile.role !== matchingTeam.member.role ||
                 profile.companyName !== companyName
               ) {
                 profile = {
                   ...profile,
-                  linkedCompanyId: currentTeam.companyId,
-                  role: currentTeam.member.role,
-                  areas: currentTeam.member.areas,
+                  linkedCompanyId: matchingTeam.companyId,
+                  role: matchingTeam.member.role,
+                  areas: matchingTeam.member.areas,
                   companyName: companyName
                 };
                 await dbService.setUserProfile(profile);
               }
+            } else if (!profile.linkedCompanyId) {
+              profile = { ...profile, linkedCompanyId: profile.id };
+              await dbService.setUserProfile(profile);
             }
           }
         }
+
+        // Fetch ONLY companies belonging to this specific user/email
+        const userCompanies = await dbService.getUserCompanies(email, firebaseUser.uid);
+        setAvailableCompanies(userCompanies);
 
         setCurrentUser(profile);
         localStorage.setItem('sied_current_user', JSON.stringify(profile));
@@ -631,7 +646,20 @@ export default function App() {
     setKardexCurrentPage(1);
   }, [kardexFilterProduct, kardexFilterType, kardexFilterStartDate, kardexFilterEndDate, kardexSearch]);
 
-  const [formData, setFormData] = useState({ 
+  const [formData, setFormData] = useState<{
+    quantity: number;
+    cost: number;
+    minStock: number;
+    supplier: string;
+    name: string;
+    description: string;
+    category: string;
+    unit: 'litro' | 'unidad' | 'kilo';
+    type: 'materia prima' | 'producción' | 'producto terminado';
+    productDescription: string;
+    entryDate: string;
+    alcoholGl?: number;
+  }>({ 
     quantity: 0, 
     cost: 0, 
     minStock: 0,
@@ -639,10 +667,11 @@ export default function App() {
     name: '', 
     description: '', 
     category: '', 
-    unit: 'litro' as const,
-    type: 'materia prima' as const,
+    unit: 'litro',
+    type: 'materia prima',
     productDescription: '', // description of entry/exit
-    entryDate: new Date().toISOString().split('T')[0]
+    entryDate: new Date().toISOString().split('T')[0],
+    alcoholGl: undefined
   });
 
   const addAuditLog = (action: AuditEntry['action'], entityType: AuditEntry['entityType'], entityId: string, details: string, prev?: any, curr?: any) => {
@@ -839,8 +868,8 @@ export default function App() {
     const stock: Record<string, number> = {};
     products.forEach(p => {
       stock[p.id] = batches
-        .filter(b => b.productId === p.id)
-        .reduce((sum, b) => sum + b.remainingQuantity, 0);
+        .filter(b => (b.productId || '').trim().toLowerCase() === (p.id || '').trim().toLowerCase())
+        .reduce((sum, b) => sum + (Number(b.remainingQuantity) || 0), 0);
     });
     return stock;
   }, [products, batches]);
@@ -886,13 +915,13 @@ export default function App() {
   }, [productStock, products, notifications, currentUser?.linkedCompanyId]);
   
   const filteredKardex = useMemo(() => {
-    // Collect all finished products IDs
+    // Collect all finished/production products IDs
     const finishedProductIds = new Set(
-      products.filter(p => p.type === 'producto terminado').map(p => p.id)
+      products.filter(p => p.type === 'producto terminado' || p.type === 'producción').map(p => p.id)
     );
 
-    // Only process kardex for finished products
-    const finishedProductsList = products.filter(p => p.type === 'producto terminado');
+    // Process kardex for finished and production products
+    const finishedProductsList = products.filter(p => p.type === 'producto terminado' || p.type === 'producción');
     const fullKardex = generateUnifiedKardex(finishedProductsList, batches, transactions);
 
     return fullKardex.filter(entry => {
@@ -1011,14 +1040,85 @@ export default function App() {
     });
   };
 
-  const handleAddEntry = (e: React.FormEvent) => {
+  const handleAddEntry = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedProductId) return;
+    if (!selectedProductId || !effectiveCompanyId) return;
+
+    const currentProd = products.find(p => p.id === selectedProductId);
+    const isAlcohol = showAlcoholOnly || isAlcoholProduct(currentProd);
+    const resolvedGl = isAlcohol 
+      ? (formData.alcoholGl !== undefined ? Number(formData.alcoholGl) : 96) 
+      : undefined;
 
     const nowTime = new Date().toTimeString().split(' ')[0];
     const resolvedEntryDate = formData.entryDate
       ? (formData.entryDate.includes('T') ? formData.entryDate : `${formData.entryDate}T${nowTime}`)
       : new Date().toISOString();
+
+    const glTag = resolvedGl !== undefined ? ` [${resolvedGl}° GL]` : '';
+    const descWithGl = formData.productDescription
+      ? (resolvedGl !== undefined ? `${formData.productDescription} • ${resolvedGl}° GL` : formData.productDescription)
+      : (resolvedGl !== undefined ? `Alcohol ${resolvedGl}° GL` : '');
+
+    const isMfgType = currentProd?.type === 'producto terminado' || currentProd?.type === 'producción';
+    const recipe = currentProd?.recipe || [];
+
+    let currentBatches = [...batches];
+    const productionTransactions: Transaction[] = [];
+    let calculatedCost = formData.cost;
+
+    // If it's a finished product or production product that has recipe materials configured,
+    // discount the raw materials from stock using PEPS!
+    if (isMfgType && recipe.length > 0 && formData.quantity > 0) {
+      // Validate materials stock
+      const missing: string[] = [];
+      for (const item of recipe) {
+        const matId = item.materialProductId;
+        const qtyNeeded = Number(item.quantityNeeded ?? (item as any).quantity ?? (item as any).amount ?? 0);
+        const requiredQty = qtyNeeded * formData.quantity;
+        const available = Number(productStock[matId]) || 0;
+        if (available < (requiredQty - 1e-6)) {
+          const matName = products.find(p => p.id === matId)?.name || item.materialName || 'Material';
+          missing.push(`• ${matName}: se requieren ${requiredQty.toFixed(2)}, pero solo hay ${available.toFixed(2)} en stock.`);
+        }
+      }
+
+      if (missing.length > 0) {
+        alert(`Stock insuficiente de materias primas para fabricar/ingresar esta cantidad:\n\n${missing.join('\n')}\n\nPor favor abastezca las materias primas primero.`);
+        return;
+      }
+
+      let totalMatCost = 0;
+      for (const item of recipe) {
+        const qtyNeeded = Number(item.quantityNeeded ?? (item as any).quantity ?? (item as any).amount ?? 0);
+        const requiredQty = qtyNeeded * formData.quantity;
+        const { updatedBatches, transactions: txs, totalCost: ingredientCost } = processExit(
+          requiredQty,
+          currentBatches,
+          item.materialProductId,
+          `Consumo de insumos por entrada/fabricación: ${formData.quantity} ${currentProd?.unit || 'unidad'}s de "${currentProd?.name}"`,
+          'EXIT',
+          currentUser?.name || currentUser?.email || 'Producción',
+          undefined,
+          formData.entryDate || resolvedEntryDate.split('T')[0]
+        );
+        currentBatches = updatedBatches;
+        totalMatCost += ingredientCost;
+        productionTransactions.push(...txs);
+      }
+
+      if (calculatedCost === 0 && formData.quantity > 0) {
+        calculatedCost = totalMatCost / formData.quantity;
+      }
+
+      // Persist consumed raw material batches and transactions to Firestore
+      const batchesToSave = currentBatches.filter(b => {
+        const oldB = batches.find(ob => ob.id === b.id);
+        return oldB && Math.abs(Number(oldB.remainingQuantity) - Number(b.remainingQuantity)) > 1e-6;
+      });
+      await Promise.all(batchesToSave.map(b => dbService.saveBatch(effectiveCompanyId, b)));
+      await Promise.all(productionTransactions.map(tx => dbService.saveTransaction(effectiveCompanyId, tx)));
+    }
 
     const newBatch: Batch = {
       id: crypto.randomUUID(),
@@ -1026,17 +1126,24 @@ export default function App() {
       entryDate: resolvedEntryDate,
       quantity: formData.quantity,
       remainingQuantity: formData.quantity,
-      unitCost: formData.cost,
-      supplier: formData.supplier || 'N/A',
-      description: formData.productDescription,
+      unitCost: calculatedCost,
+      supplier: isMfgType ? (formData.supplier || 'Producción Interna') : (formData.supplier || 'N/A'),
+      description: descWithGl || (isMfgType ? 'Fabricación / Entrada de producto' : ''),
+      alcoholGl: resolvedGl,
       type: 'ENTRY',
       performedBy: currentUser?.name || currentUser?.email || 'Sistema'
     };
 
-    if (effectiveCompanyId) {
-      dbService.saveBatch(effectiveCompanyId, newBatch);
+    await dbService.saveBatch(effectiveCompanyId, newBatch);
+
+    // Update local state immediately so raw material stock decreases instantly on screen
+    const nextBatches = [...currentBatches, newBatch];
+    setBatches(nextBatches);
+    if (productionTransactions.length > 0) {
+      setTransactions(prev => [...prev, ...productionTransactions]);
     }
-    addAuditLog('CREATE', 'BATCH', newBatch.id, `Entrada manual (${format(new Date(resolvedEntryDate), 'dd/MM/yyyy')}): ${newBatch.quantity} unidades para ${products.find(p => p.id === selectedProductId)?.name}`, null, newBatch);
+
+    addAuditLog('CREATE', 'BATCH', newBatch.id, `Entrada manual (${format(new Date(resolvedEntryDate), 'dd/MM/yyyy')}): ${newBatch.quantity} ${currentProd?.unit || 'unidades'} para ${currentProd?.name || 'Producto'}${glTag}${productionTransactions.length > 0 ? ' (Insumos descontados por PEPS)' : ''}`, null, newBatch);
     setShowModal(null);
     setFormData({ 
       quantity: 0, 
@@ -1049,7 +1156,8 @@ export default function App() {
       unit: 'litro',
       type: 'materia prima',
       productDescription: '',
-      entryDate: new Date().toISOString().split('T')[0]
+      entryDate: new Date().toISOString().split('T')[0],
+      alcoholGl: undefined
     });
   };
 
@@ -1397,7 +1505,9 @@ export default function App() {
           ? (formData.entryDate.includes('T') ? formData.entryDate : `${formData.entryDate}T${nowTime}`)
           : prevBatch.entryDate;
 
-        const updatedBatch = {
+        const prod = products.find(p => p.id === prevBatch.productId);
+        const isAlc = showAlcoholOnly || isAlcoholProduct(prod);
+        const updatedBatch: Batch = {
           ...prevBatch,
           entryDate: resolvedEntryDate,
           quantity: formData.quantity,
@@ -1405,6 +1515,7 @@ export default function App() {
           unitCost: formData.cost,
           supplier: formData.supplier || 'N/A',
           description: formData.productDescription,
+          alcoholGl: isAlc ? (formData.alcoholGl !== undefined ? Number(formData.alcoholGl) : prevBatch.alcoholGl) : undefined,
           performedBy: currentUser?.name || currentUser?.email || 'Sistema'
         };
         dbService.saveBatch(effectiveCompanyId, updatedBatch);
@@ -1799,7 +1910,7 @@ export default function App() {
   };
 
   const handleExportXLSX = (mode: 'filtered' | 'all' = 'filtered') => {
-    const finishedProductsList = products.filter(p => p.type === 'producto terminado');
+    const finishedProductsList = products.filter(p => p.type === 'producto terminado' || p.type === 'producción');
     const entriesToExport = mode === 'all' 
       ? generateUnifiedKardex(finishedProductsList, batches, transactions) 
       : filteredKardex;
@@ -1953,193 +2064,302 @@ export default function App() {
     setProductToEdit(null);
   };
 
-  const handleExecuteProductionOrder = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!effectiveCompanyId) return;
-
-    const finishedProduct = products.find(p => p.id === produceForm.productId);
-    if (!finishedProduct) {
-      alert('Seleccione un producto terminado válido.');
+  const handleOpenDilutionTo27 = async () => {
+    if (!effectiveCompanyId) {
+      alert('Error: No se ha detectado la empresa activa.');
       return;
     }
 
-    const recipe = finishedProduct.recipe || [];
-    if (recipe.length === 0) {
-      alert('Este producto no tiene configurada una receta / consumo de materiales. Edite el producto para definir qué materiales consume.');
-      return;
-    }
-
-    // Determine total units to produce
-    let totalUnits = Number(produceForm.quantityToProduce) || 0;
-    if (produceForm.producedIn === 'cajas' && finishedProduct.packaging?.unitsPerBox) {
-      totalUnits = (Number(produceForm.boxCount) || 0) * finishedProduct.packaging.unitsPerBox;
-    } else if (produceForm.producedIn === 'bultos' && finishedProduct.packaging?.unitsPerBundle) {
-      totalUnits = (Number(produceForm.bundleCount) || 0) * finishedProduct.packaging.unitsPerBundle;
-    }
-
-    if (totalUnits <= 0) {
-      alert('La cantidad a producir debe ser mayor a cero.');
-      return;
-    }
-
-    // Check material stock requirements
-    const missingMaterials: string[] = [];
-    for (const item of recipe) {
-      const requiredQty = item.quantityNeeded * totalUnits;
-      const currentAvailable = productStock[item.materialProductId] || 0;
-      if (currentAvailable < requiredQty) {
-        const matName = products.find(p => p.id === item.materialProductId)?.name || 'Material desconocido';
-        missingMaterials.push(`• ${matName}: se necesitan ${requiredQty.toFixed(2)}, pero solo hay ${currentAvailable.toFixed(2)} en stock.`);
-      }
-    }
-
-    if (missingMaterials.length > 0) {
-      alert(`No hay suficiente materia prima en inventario para llevar a cabo esta producción:\n\n${missingMaterials.join('\n')}\n\nPor favor registre una compra o entrada de estos materiales primero.`);
-      return;
-    }
-
-    // Process PEPS consumption for each ingredient
-    let currentBatches = [...batches];
-    let totalProductionCost = 0;
-    const consumedDetails: Array<{
-      materialProductId: string;
-      materialName: string;
-      quantityUsed: number;
-      unit: string;
-      cost: number;
-    }> = [];
-    const productionTransactions: Transaction[] = [];
-
-    const prodDate = produceForm.productionDate || new Date().toISOString().split('T')[0];
-    const companyId = effectiveCompanyId;
-
-    for (const item of recipe) {
-      const requiredQty = item.quantityNeeded * totalUnits;
-      const mat = products.find(p => p.id === item.materialProductId);
-      const matName = mat?.name || 'Materia Prima';
-
-      const { updatedBatches, transactions: txs, totalCost: ingredientCost } = processExit(
-        requiredQty,
-        currentBatches,
-        item.materialProductId,
-        `Consumo para producir ${totalUnits} ${finishedProduct.unit}s de "${finishedProduct.name}"`,
-        'EXIT',
-        currentUser.name || currentUser.email || 'Producción',
-        undefined,
-        prodDate
-      );
-
-      currentBatches = updatedBatches;
-      totalProductionCost += ingredientCost;
-      productionTransactions.push(...txs);
-
-      consumedDetails.push({
-        materialProductId: item.materialProductId,
-        materialName: matName,
-        quantityUsed: requiredQty,
-        unit: mat?.unit || item.unit || 'unidad',
-        cost: ingredientCost
-      });
-    }
-
-    // Calculate unit cost for the newly created batch
-    const unitCost = totalUnits > 0 ? (totalProductionCost / totalUnits) : 0;
-
-    // Create the finished product batch in inventory
-    const boxesCount = finishedProduct.packaging?.unitsPerBox && finishedProduct.packaging.unitsPerBox > 0 
-      ? Math.floor(totalUnits / finishedProduct.packaging.unitsPerBox) 
-      : undefined;
-    const bundlesCount = finishedProduct.packaging?.unitsPerBundle && finishedProduct.packaging.unitsPerBundle > 0 
-      ? Math.floor(totalUnits / finishedProduct.packaging.unitsPerBundle) 
-      : undefined;
-
-    let packagingDesc = '';
-    if (produceForm.producedIn === 'cajas') {
-      packagingDesc = ` (${produceForm.boxCount} cajas de ${finishedProduct.packaging?.unitsPerBox} ${finishedProduct.unit}s c/u)`;
-    } else if (produceForm.producedIn === 'bultos') {
-      packagingDesc = ` (${produceForm.bundleCount} bultos de ${finishedProduct.packaging?.unitsPerBundle} ${finishedProduct.unit}s c/u)`;
-    } else if (boxesCount || bundlesCount) {
-      packagingDesc = ` (Equivale a ${boxesCount ? `${boxesCount} cajas` : ''}${boxesCount && bundlesCount ? ' / ' : ''}${bundlesCount ? `${bundlesCount} bultos` : ''})`;
-    }
-
-    const nowTime = new Date().toTimeString().split(' ')[0];
-    const resolvedProdDate = prodDate.includes('T') ? prodDate : `${prodDate}T${nowTime}`;
-
-    const newFinishedBatch: Batch = {
-      id: crypto.randomUUID(),
-      productId: finishedProduct.id,
-      entryDate: resolvedProdDate,
-      quantity: totalUnits,
-      remainingQuantity: totalUnits,
-      unitCost: unitCost,
-      supplier: 'Producción Interna',
-      description: `Lote fabricado a partir de materias primas${packagingDesc}. ${produceForm.notes || ''}`.trim(),
-      type: 'ENTRY',
-      performedBy: currentUser?.name || currentUser?.email || 'Producción'
-    };
-
-    // Save production order record
-    const orderRecord: ProductionOrderRecord = {
-      id: crypto.randomUUID(),
-      finishedProductId: finishedProduct.id,
-      finishedProductName: finishedProduct.name,
-      quantityProduced: totalUnits,
-      boxesProduced: boxesCount,
-      bundlesProduced: bundlesCount,
-      totalCost: totalProductionCost,
-      unitCost: unitCost,
-      date: new Date(prodDate + 'T12:00:00').toISOString(),
-      performedBy: currentUser?.name || currentUser?.email || 'Producción',
-      consumedMaterials: consumedDetails,
-      notes: produceForm.notes
-    };
-
-    // Commit changes to Firebase
-    // 1. Updated ingredient batches
-    currentBatches
-      .filter(b => {
-        const oldB = batches.find(ob => ob.id === b.id);
-        return oldB && oldB.remainingQuantity !== b.remainingQuantity;
-      })
-      .forEach(b => dbService.saveBatch(companyId, b));
-
-    // 2. Ingredient consumption transactions
-    productionTransactions.forEach(tx => dbService.saveTransaction(companyId, tx));
-
-    // 3. New finished product batch
-    await dbService.saveBatch(companyId, newFinishedBatch);
-
-    // 4. Production order record
-    await dbService.saveProductionOrder(companyId, orderRecord);
-
-    // 5. Audit logs
-    addAuditLog(
-      'CREATE',
-      'PRODUCTION',
-      orderRecord.id,
-      `Producción completada: ${totalUnits} ${finishedProduct.unit}s de "${finishedProduct.name}" (Costo total: $${totalProductionCost.toLocaleString('es-CO', { minimumFractionDigits: 2 })}). Materiales consumidos: ${consumedDetails.map(d => `${d.quantityUsed} ${d.unit} de ${d.materialName}`).join(', ')}`,
-      null,
-      orderRecord
-    );
-
-    addNotification({
-      type: 'SUCCESS',
-      title: '¡Producción Exitosa!',
-      message: `Se fabricaron ${totalUnits} ${finishedProduct.unit}s de "${finishedProduct.name}" ingresadas al inventario. Materias primas descontadas por PEPS.`,
-      linkTab: 'inventory',
-      productId: finishedProduct.id
+    // 1. Locate or create base 96° GL alcohol product
+    let alc96 = products.find(p => {
+      const n = p.name.toLowerCase();
+      return (n.includes('96') && (n.includes('alcohol') || n.includes('extra') || n.includes('etílico') || n.includes('etilico'))) ||
+             (isAlcoholProduct(p) && p.type === 'materia prima');
     });
 
-    setShowModal(null);
+    if (!alc96) {
+      alc96 = {
+        id: crypto.randomUUID(),
+        name: 'Alcohol Etílico Extra Neutro 96° GL',
+        description: 'Alcohol desnaturalizado de caña para formulación y destilería',
+        category: 'Alcoholes',
+        type: 'materia prima',
+        unit: 'litro',
+        minStock: 100
+      };
+      await dbService.saveProduct(effectiveCompanyId, alc96);
+    }
+
+    // 2. Locate or create Alcohol Diluido a 27° GL product connected to 96° GL
+    let dil27 = products.find(p => {
+      const n = p.name.toLowerCase();
+      return n.includes('27') && (n.includes('alcohol') || n.includes('diluid'));
+    });
+
+    if (!dil27) {
+      dil27 = {
+        id: crypto.randomUUID(),
+        name: 'Alcohol Diluido a 27° GL',
+        description: 'Solución hidroalcohólica diluida a 27° Gay-Lussac formulada a partir de Alcohol 96° GL',
+        category: 'Alcoholes',
+        type: 'producción',
+        unit: 'litro',
+        minStock: 100,
+        recipe: [
+          {
+            materialProductId: alc96.id,
+            materialName: alc96.name,
+            quantityNeeded: 0.28125, // C1*V1 = C2*V2 -> 27/96 = 0.28125 L de alcohol 96° GL por cada litro de 27° GL
+            unit: 'litro'
+          }
+        ]
+      };
+      await dbService.saveProduct(effectiveCompanyId, dil27);
+    } else if (!dil27.recipe || dil27.recipe.length === 0 || !dil27.recipe.some(r => r.materialProductId === alc96!.id)) {
+      const updatedDil27: Product = {
+        ...dil27,
+        recipe: [
+          {
+            materialProductId: alc96.id,
+            materialName: alc96.name,
+            quantityNeeded: 0.28125,
+            unit: 'litro'
+          }
+        ]
+      };
+      await dbService.saveProduct(effectiveCompanyId, updatedDil27);
+      dil27 = updatedDil27;
+    }
+
     setProduceForm({
-      productId: '',
-      quantityToProduce: 1,
+      productId: dil27.id,
+      quantityToProduce: 100,
       producedIn: 'unidades',
-      boxCount: 0,
-      bundleCount: 0,
-      notes: '',
+      boxCount: 1,
+      bundleCount: 1,
+      notes: 'Dilución controlada de Alcohol 96° GL a 27° GL (Consumo: 0.28125 L de 96° por cada litro producido)',
       productionDate: new Date().toISOString().split('T')[0]
     });
+    setShowModal('produce');
+  };
+
+  const handleExecuteProductionOrder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!effectiveCompanyId) {
+      alert('Error: No se ha detectado la empresa activa.');
+      return;
+    }
+
+    setProductionError(null);
+    setIsExecutingProduction(true);
+
+    try {
+      const finishedProduct = products.find(p => p.id === produceForm.productId);
+      if (!finishedProduct) {
+        throw new Error('Seleccione un producto terminado válido.');
+      }
+
+      const recipe = finishedProduct.recipe || [];
+      if (recipe.length === 0) {
+        throw new Error('Este producto no tiene configurada una receta / consumo de materias primas. Edite el producto para definir los insumos que consume.');
+      }
+
+      // Determine total units to produce
+      const packaging = finishedProduct.packaging;
+      const perBox = (packaging?.unitsPerBox && Number(packaging.unitsPerBox) > 0) ? Number(packaging.unitsPerBox) : 1;
+      const perBundle = (packaging?.unitsPerBundle && Number(packaging.unitsPerBundle) > 0) ? Number(packaging.unitsPerBundle) : 1;
+
+      let totalUnits = Number(produceForm.quantityToProduce) || 0;
+      if (produceForm.producedIn === 'cajas') {
+        const boxes = Number(produceForm.boxCount) || 0;
+        totalUnits = boxes * perBox;
+      } else if (produceForm.producedIn === 'bultos') {
+        const bundles = Number(produceForm.bundleCount) || 0;
+        totalUnits = bundles * perBundle;
+      }
+
+      if (totalUnits <= 0) {
+        throw new Error('La cantidad a fabricar debe ser mayor a cero.');
+      }
+
+      // Check material stock requirements with floating-point tolerance
+      const missingMaterials: string[] = [];
+      for (const item of recipe) {
+        const qtyNeeded = Number(item.quantityNeeded ?? (item as any).quantity ?? (item as any).amount ?? 0);
+        const requiredQty = qtyNeeded * totalUnits;
+        const currentAvailable = Number(productStock[item.materialProductId]) || 0;
+        if (currentAvailable < (requiredQty - 1e-6)) {
+          const matName = products.find(p => p.id === item.materialProductId)?.name || item.materialName || 'Material';
+          missingMaterials.push(`• ${matName}: se requieren ${requiredQty.toFixed(2)}, pero solo hay ${currentAvailable.toFixed(2)} en stock.`);
+        }
+      }
+
+      if (missingMaterials.length > 0) {
+        throw new Error(`Stock insuficiente de materias primas para fabricar esta cantidad:\n\n${missingMaterials.join('\n')}\n\nPor favor registre una entrada de estos materiales primero.`);
+      }
+
+      // Process PEPS consumption for each ingredient
+      let currentBatches = [...batches];
+      let totalProductionCost = 0;
+      const consumedDetails: Array<{
+        materialProductId: string;
+        materialName: string;
+        quantityUsed: number;
+        unit: string;
+        cost: number;
+      }> = [];
+      const productionTransactions: Transaction[] = [];
+
+      const prodDate = produceForm.productionDate || new Date().toISOString().split('T')[0];
+      const companyId = effectiveCompanyId;
+      const performer = currentUser?.name || currentUser?.email || 'Producción';
+
+      for (const item of recipe) {
+        const qtyNeeded = Number(item.quantityNeeded ?? (item as any).quantity ?? (item as any).amount ?? 0);
+        const requiredQty = qtyNeeded * totalUnits;
+        const mat = products.find(p => p.id === item.materialProductId);
+        const matName = mat?.name || item.materialName || 'Materia Prima';
+
+        const { updatedBatches, transactions: txs, totalCost: ingredientCost } = processExit(
+          requiredQty,
+          currentBatches,
+          item.materialProductId,
+          `Consumo de insumo para fabricar ${totalUnits} ${finishedProduct.unit}s de "${finishedProduct.name}"`,
+          'EXIT',
+          performer,
+          undefined,
+          prodDate
+        );
+
+        currentBatches = updatedBatches;
+        totalProductionCost += ingredientCost;
+        productionTransactions.push(...txs);
+
+        consumedDetails.push({
+          materialProductId: item.materialProductId,
+          materialName: matName,
+          quantityUsed: requiredQty,
+          unit: mat?.unit || item.unit || 'unidad',
+          cost: ingredientCost
+        });
+      }
+
+      // Calculate unit cost for the newly created finished batch
+      const unitCost = totalUnits > 0 ? (totalProductionCost / totalUnits) : 0;
+
+      // Create the finished product batch in inventory
+      const boxesCount = finishedProduct.packaging?.unitsPerBox && finishedProduct.packaging.unitsPerBox > 0 
+        ? Math.floor(totalUnits / finishedProduct.packaging.unitsPerBox) 
+        : undefined;
+      const bundlesCount = finishedProduct.packaging?.unitsPerBundle && finishedProduct.packaging.unitsPerBundle > 0 
+        ? Math.floor(totalUnits / finishedProduct.packaging.unitsPerBundle) 
+        : undefined;
+
+      let packagingDesc = '';
+      if (produceForm.producedIn === 'cajas') {
+        packagingDesc = ` (${produceForm.boxCount} cajas de ${finishedProduct.packaging?.unitsPerBox} ${finishedProduct.unit}s c/u)`;
+      } else if (produceForm.producedIn === 'bultos') {
+        packagingDesc = ` (${produceForm.bundleCount} bultos de ${finishedProduct.packaging?.unitsPerBundle} ${finishedProduct.unit}s c/u)`;
+      } else if (boxesCount || bundlesCount) {
+        packagingDesc = ` (Equivale a ${boxesCount ? `${boxesCount} cajas` : ''}${boxesCount && bundlesCount ? ' / ' : ''}${bundlesCount ? `${bundlesCount} bultos` : ''})`;
+      }
+
+      const nowTime = new Date().toTimeString().split(' ')[0];
+      const resolvedProdDate = prodDate.includes('T') ? prodDate : `${prodDate}T${nowTime}`;
+
+      const isAlc27 = finishedProduct.name.toLowerCase().includes('27') && (finishedProduct.name.toLowerCase().includes('alcohol') || finishedProduct.name.toLowerCase().includes('diluid'));
+      const newFinishedBatch: Batch = {
+        id: crypto.randomUUID(),
+        productId: finishedProduct.id,
+        entryDate: resolvedProdDate,
+        quantity: totalUnits,
+        remainingQuantity: totalUnits,
+        unitCost: unitCost,
+        supplier: isAlc27 ? 'Dilución y Mezcla Interna' : 'Producción Interna',
+        description: isAlc27 
+          ? `Lote de Alcohol diluido a 27° GL obtenido de Alcohol 96° GL. ${produceForm.notes || ''}`.trim()
+          : `Lote fabricado a partir de materias primas consumidas${packagingDesc}. ${produceForm.notes || ''}`.trim(),
+        alcoholGl: isAlc27 ? 27 : undefined,
+        type: 'ENTRY',
+        performedBy: performer
+      };
+
+      // Save production order record
+      const orderRecord: ProductionOrderRecord = {
+        id: crypto.randomUUID(),
+        finishedProductId: finishedProduct.id,
+        finishedProductName: finishedProduct.name,
+        quantityProduced: totalUnits,
+        boxesProduced: boxesCount,
+        bundlesProduced: bundlesCount,
+        totalCost: totalProductionCost,
+        unitCost: unitCost,
+        date: new Date(prodDate + 'T12:00:00').toISOString(),
+        performedBy: performer,
+        consumedMaterials: consumedDetails,
+        notes: produceForm.notes
+      };
+
+      // 1. Identify all raw material batches that had quantities consumed
+      const batchesToSave = currentBatches.filter(b => {
+        const oldB = batches.find(ob => ob.id === b.id);
+        return oldB && oldB.remainingQuantity !== b.remainingQuantity;
+      });
+
+      // 2. Persist updated material batches to Firestore (discounting them / reducing remaining quantity to 0)
+      await Promise.all(batchesToSave.map(b => dbService.saveBatch(companyId, b)));
+
+      // 3. Persist raw material consumption exit transactions
+      await Promise.all(productionTransactions.map(tx => dbService.saveTransaction(companyId, tx)));
+
+      // 4. Persist new finished product batch to Firestore
+      await dbService.saveBatch(companyId, newFinishedBatch);
+
+      // 5. Persist production order record
+      await dbService.saveProductionOrder(companyId, orderRecord);
+
+      // 6. Immediately update local React state so materials are discounted on screen instantly
+      const nextBatches = [...currentBatches, newFinishedBatch];
+      setBatches(nextBatches);
+      setTransactions(prev => [...prev, ...productionTransactions]);
+      setProductionOrders(prev => [orderRecord, ...prev]);
+
+      // 7. Audit logs & notifications
+      addAuditLog(
+        'CREATE',
+        'PRODUCTION',
+        orderRecord.id,
+        `Producción completada: ${totalUnits} ${finishedProduct.unit}s de "${finishedProduct.name}" (Costo total: $${totalProductionCost.toLocaleString('es-CO', { minimumFractionDigits: 2 })}). Materiales descontados del inventario: ${consumedDetails.map(d => `${d.quantityUsed} ${d.unit} de ${d.materialName}`).join(', ')}`,
+        null,
+        orderRecord
+      );
+
+      addNotification({
+        type: 'SUCCESS',
+        title: '¡Fabricación Exitosa!',
+        message: `Se fabricaron ${totalUnits} ${finishedProduct.unit}s de "${finishedProduct.name}". Se descontaron las materias primas del inventario (PEPS).`,
+        linkTab: 'inventory',
+        productId: finishedProduct.id
+      });
+
+      setShowModal(null);
+      setProduceForm({
+        productId: '',
+        quantityToProduce: 1,
+        producedIn: 'unidades',
+        boxCount: 0,
+        bundleCount: 0,
+        notes: '',
+        productionDate: new Date().toISOString().split('T')[0]
+      });
+    } catch (err: any) {
+      console.error('Error al fabricar producto:', err);
+      const msg = err?.message || 'Error al ejecutar la orden de producción';
+      setProductionError(msg);
+      alert(msg);
+    } finally {
+      setIsExecutingProduction(false);
+    }
   };
 
   const handlePeopleSubmit = (e: React.FormEvent) => {
@@ -2590,11 +2810,20 @@ export default function App() {
                   </div>
                 </div>
 
-                {registerForm === 'usuario' && (
-                  <div className="bg-accent/5 border border-accent/20 rounded-2xl p-4 text-xs font-bold text-accent/90 leading-relaxed flex items-start gap-2.5">
-                    <span className="text-sm mt-0.5">ℹ️</span>
+                {registerForm === 'empresa' && (
+                  <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-3.5 text-xs font-bold text-emerald-600 dark:text-emerald-400 leading-relaxed flex items-start gap-2.5">
+                    <Shield size={16} className="mt-0.5 shrink-0" />
                     <span>
-                      Si fuiste agregado previamente como personal de una empresa, regístrate con ese mismo correo electrónico para vincularte automáticamente.
+                      Tu cuenta y almacén son <b>100% únicos e independientes por tu correo</b>. Aunque otra empresa tenga un nombre idéntico, cada cuenta conserva su propia base de datos aislada.
+                    </span>
+                  </div>
+                )}
+
+                {registerForm === 'usuario' && (
+                  <div className="bg-accent/5 border border-accent/20 rounded-xl p-3.5 text-xs font-bold text-accent/90 leading-relaxed flex items-start gap-2.5">
+                    <Mail size={16} className="mt-0.5 shrink-0" />
+                    <span>
+                      La vinculación se realiza <b>exclusivamente a través del correo</b>. Si una empresa te agregó a su personal, regístrate con ese mismo correo para acceder a su espacio de trabajo.
                     </span>
                   </div>
                 )}
@@ -3005,7 +3234,7 @@ export default function App() {
             </div>
 
             {/* Company / Workspace Switcher */}
-            {availableCompanies.length > 0 && (
+            {availableCompanies.length > 1 && (
               <div className="flex items-center gap-2 bg-sidebar border border-main px-3 py-1.5 rounded-xl ml-4">
                 <Building2 size={16} className="text-accent" />
                 <div className="flex flex-col">
@@ -3418,13 +3647,22 @@ export default function App() {
                     </button>
                   )}
                   <button 
-                    onClick={handleSeedSystemData}
-                    disabled={isSeedingData}
-                    className="flex-1 md:flex-initial bg-sidebar border border-muted/30 text-muted hover:text-accent hover:border-accent/40 px-4 py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-all text-[10px] md:text-xs uppercase tracking-widest shadow-sm disabled:opacity-50"
-                    title="Cargar productos de demostración de Destilería Ormón (Opcional)"
+                    onClick={() => setShowAlcoholOnly(!showAlcoholOnly)}
+                    className={cn(
+                      "flex-1 md:flex-initial px-5 py-3 rounded-xl font-black flex items-center justify-center gap-2 transition-all text-[10px] md:text-xs uppercase tracking-widest shadow-sm border",
+                      showAlcoholOnly 
+                        ? "bg-accent text-white border-accent shadow-lg shadow-brand-gold-shadow scale-105" 
+                        : "bg-sidebar border-accent/40 text-accent hover:bg-accent/10"
+                    )}
+                    title={showAlcoholOnly ? "Ver inventario completo con todos los productos" : "Pasar al inventario de solamente alcohol"}
                   >
-                    <Sparkles size={16} className={isSeedingData ? 'animate-spin' : ''} />
-                    <span>{isSeedingData ? 'Cargando Demo...' : 'Catálogo Demo'}</span>
+                    <Wine size={16} />
+                    <span>Alcohol</span>
+                    {showAlcoholOnly && (
+                      <span className="bg-white/20 text-white text-[8px] font-black px-1.5 py-0.5 rounded-full ml-1">
+                        Solo Alcohol
+                      </span>
+                    )}
                   </button>
                 </div>
               </header>
@@ -3480,9 +3718,104 @@ export default function App() {
                 )}
               </div>
 
+              {/* Alcohol Inventory Mode Dedicated Banner */}
+              {showAlcoholOnly && (
+                <div className="mb-8 p-5 rounded-2xl bg-gradient-to-r from-accent/15 via-accent/5 to-transparent border border-accent/30 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-sm">
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-11 h-11 rounded-2xl bg-accent/20 border border-accent/30 text-accent flex items-center justify-center shrink-0">
+                      <Wine size={22} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-sm md:text-base font-black uppercase tracking-wider text-accent">
+                          Inventario de Solamente Alcohol
+                        </h4>
+                        <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-accent text-white">
+                          Filtro Activo
+                        </span>
+                      </div>
+                      <p className="text-[10px] md:text-xs font-bold text-muted uppercase tracking-wider mt-0.5">
+                        Control de existencias de alcohol a 96 °GL y dilución conectada a 27 °GL
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
+                    <button
+                      onClick={() => {
+                        const alc = products.find(p => isAlcoholProduct(p) && (p.name.includes('96') || p.type === 'materia prima')) || products.find(isAlcoholProduct);
+                        if (alc) {
+                          setSelectedProductId(alc.id);
+                          setShowModal('entry');
+                          setFormData({
+                            quantity: 0,
+                            cost: 0,
+                            minStock: 0,
+                            supplier: '',
+                            name: alc.name,
+                            description: '',
+                            category: alc.category,
+                            unit: alc.unit,
+                            type: alc.type,
+                            productDescription: 'Entrada de alcohol a 96 °GL',
+                            entryDate: new Date().toISOString().split('T')[0],
+                            alcoholGl: 96
+                          });
+                        } else {
+                          const newAlcoholProd: Product = {
+                            id: crypto.randomUUID(),
+                            name: 'Alcohol Etílico Extra Neutro 96° GL',
+                            description: 'Alcohol desnaturalizado de caña para formulación y destilería',
+                            category: 'Alcoholes',
+                            type: 'materia prima',
+                            unit: 'litro',
+                            minStock: 100
+                          };
+                          if (effectiveCompanyId) {
+                            dbService.saveProduct(effectiveCompanyId, newAlcoholProd);
+                          }
+                          setSelectedProductId(newAlcoholProd.id);
+                          setShowModal('entry');
+                          setFormData({
+                            quantity: 0,
+                            cost: 0,
+                            minStock: 0,
+                            supplier: '',
+                            name: newAlcoholProd.name,
+                            description: '',
+                            category: newAlcoholProd.category,
+                            unit: newAlcoholProd.unit,
+                            type: newAlcoholProd.type,
+                            productDescription: 'Entrada de alcohol a 96 °GL',
+                            entryDate: new Date().toISOString().split('T')[0],
+                            alcoholGl: 96
+                          });
+                        }
+                      }}
+                      className="flex-1 sm:flex-initial px-4 py-2.5 bg-accent text-white rounded-xl font-black text-xs uppercase tracking-wider hover:brightness-110 flex items-center justify-center gap-1.5 shadow-md shadow-brand-gold-shadow"
+                    >
+                      <Plus size={14} /> Registrar Entrada (96 °GL)
+                    </button>
+                    <button
+                      onClick={handleOpenDilutionTo27}
+                      className="flex-1 sm:flex-initial px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-black text-xs uppercase tracking-wider hover:brightness-110 flex items-center justify-center gap-1.5 shadow-md shadow-emerald-900/20 active:scale-95 transition-all"
+                      title="Diluir Alcohol 96° GL a 27° GL descontando materia prima por PEPS"
+                    >
+                      <Factory size={14} /> Diluir a 27 °GL
+                    </button>
+                    <button
+                      onClick={() => setShowAlcoholOnly(false)}
+                      className="px-4 py-2.5 bg-main/5 hover:bg-main/10 border border-main/20 text-muted hover:text-main rounded-xl font-bold text-xs uppercase tracking-wider transition-all"
+                    >
+                      Ver Todo el Inventario
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 {products
                   .filter(p => !showLowStockOnly || productStock[p.id] <= p.minStock)
+                  .filter(p => !showAlcoholOnly || isAlcoholProduct(p))
                   .filter(p => {
                     const s = inventorySearch.toLowerCase();
                     return !inventorySearch || p.name.toLowerCase().includes(s) || p.category.toLowerCase().includes(s);
@@ -3561,6 +3894,16 @@ export default function App() {
                             {product.recipe.length} materias primas
                           </span>
                         )}
+                        {product.recipe?.some(r => r.quantityNeeded === 0.28125 || r.materialName?.toLowerCase().includes('96')) && (
+                          <span className="text-[9px] font-bold uppercase tracking-wider bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-2 py-1 rounded border border-emerald-500/20 flex items-center gap-1" title="Dilución conectada: 0.28125 L de Alcohol 96° GL por cada 1 L de 27° GL">
+                            <Wine size={10} /> Conectado a Alcohol 96° GL (0.28125 L/L)
+                          </span>
+                        )}
+                        {(product.name.toLowerCase().includes('96') && isAlcoholProduct(product)) && (
+                          <span className="text-[9px] font-bold uppercase tracking-wider bg-accent/10 text-accent px-2 py-1 rounded border border-accent/20 flex items-center gap-1" title="Materia prima base para dilución a 27° GL">
+                            <Wine size={10} /> Base 96° GL para Dilución
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         {(product.type === 'producto terminado' || product.type === 'producción') && (
@@ -3582,6 +3925,16 @@ export default function App() {
                           >
                             <Factory size={12} />
                             <span>Fabricar</span>
+                          </button>
+                        )}
+                        {(product.name.toLowerCase().includes('96') && isAlcoholProduct(product)) && (
+                          <button 
+                            onClick={handleOpenDilutionTo27}
+                            className="text-xs font-black text-emerald-500 hover:text-white hover:bg-emerald-600 flex items-center gap-1.5 py-1 px-2.5 rounded-lg bg-emerald-500/10 transition-all border border-emerald-500/30"
+                            title="Diluir este alcohol a 27° GL descontando por PEPS"
+                          >
+                            <Factory size={12} />
+                            <span>Diluir a 27° GL</span>
                           </button>
                         )}
                         <button 
@@ -3624,14 +3977,16 @@ export default function App() {
                           setFormData({ 
                             quantity: 0, 
                             cost: 0, 
+                            minStock: 0,
                             supplier: '', 
                             name: product.name, 
                             description: '', 
                             category: product.category, 
                             unit: product.unit, 
                             type: product.type, 
-                            productDescription: 'Entrada directa',
-                            entryDate: new Date().toISOString().split('T')[0]
+                            productDescription: isAlcoholProduct(product) ? 'Entrada de alcohol' : 'Entrada directa',
+                            entryDate: new Date().toISOString().split('T')[0],
+                            alcoholGl: (showAlcoholOnly || isAlcoholProduct(product)) ? 96 : undefined
                           }); 
                         }}
                         className="flex-[2] flex items-center justify-center gap-2 bg-accent text-white py-3 md:py-4 rounded-xl font-bold hover:brightness-110 active:scale-95 transition-all shadow-lg shadow-brand-gold-shadow text-sm"
@@ -3690,22 +4045,33 @@ export default function App() {
                           .map((batch, idx) => (
                             <div key={batch.id} className="flex justify-between items-center text-sm p-4 bg-black/5 dark:bg-white/5 rounded-xl border border-main group/batch">
                               <div className="flex flex-col">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                     <span className={cn(
                                         "text-[9px] font-bold px-1.5 py-0.5 rounded",
                                         idx === 0 ? "bg-accent text-white" : "bg-main/10 text-muted"
                                     )}>{idx === 0 ? 'PRÓX. SALIDA' : `LOTE ${idx + 1}`}</span>
                                     <span className="font-bold text-main">ID: {batch.id.slice(0, 5)}</span>
+                                    {(showAlcoholOnly || isAlcoholProduct(product)) && (batch.alcoholGl !== undefined ? (
+                                      <span className="text-[9px] font-black font-mono text-cyan-600 dark:text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">
+                                        {Number(batch.alcoholGl).toFixed(2).replace(/\.00$/, '')}° GL
+                                      </span>
+                                    ) : (
+                                      <span className="text-[9px] font-black font-mono text-cyan-600 dark:text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">
+                                        96° GL
+                                      </span>
+                                    ))}
                                     <button 
                                       onClick={() => {
                                         setSelectedBatchId(batch.id);
+                                        const isAlc = showAlcoholOnly || isAlcoholProduct(product);
                                         setFormData({
                                           ...formData,
                                           quantity: batch.quantity,
                                           cost: batch.unitCost,
                                           supplier: batch.supplier,
                                           productDescription: batch.description || '',
-                                          entryDate: batch.entryDate ? (batch.entryDate.includes('T') ? batch.entryDate.split('T')[0] : batch.entryDate) : new Date().toISOString().split('T')[0]
+                                          entryDate: batch.entryDate ? (batch.entryDate.includes('T') ? batch.entryDate.split('T')[0] : batch.entryDate) : new Date().toISOString().split('T')[0],
+                                          alcoholGl: isAlc ? (batch.alcoholGl !== undefined ? batch.alcoholGl : 96) : undefined
                                         });
                                         setShowModal('edit_batch');
                                       }}
@@ -3742,37 +4108,12 @@ export default function App() {
                     </div>
                     <div>
                       <h3 className="text-xl font-black uppercase tracking-tight text-main mb-1">
-                        Empresa actual sin productos registrados
+                        Almacén sin productos registrados
                       </h3>
                       <p className="text-xs text-muted font-bold max-w-md mx-auto uppercase tracking-wider leading-relaxed">
-                        Esta empresa no tiene productos guardados. Si guardó sus productos en otra empresa o cuenta, puede cambiar inmediatamente:
+                        Esta cuenta de empresa dispone de su propia base de datos independiente. Registra tus materias primas y productos terminados o carga la plantilla demo para comenzar:
                       </p>
                     </div>
-
-                    {/* Quick switch to existing companies with products */}
-                    {availableCompanies.filter(c => c.productCount > 0 && c.id !== effectiveCompanyId).length > 0 && (
-                      <div className="w-full max-w-md p-4 bg-accent/5 border border-accent/20 rounded-2xl text-left space-y-3">
-                        <span className="text-[10px] font-black uppercase tracking-widest text-accent block">
-                          Empresas con datos guardados disponibles:
-                        </span>
-                        <div className="space-y-2">
-                          {availableCompanies
-                            .filter(c => c.productCount > 0 && c.id !== effectiveCompanyId)
-                            .map(c => (
-                              <button
-                                key={c.id}
-                                onClick={() => handleSwitchCompany(c.id, c.name)}
-                                className="w-full flex items-center justify-between p-3 rounded-xl bg-card border border-main hover:border-accent transition-all text-xs font-bold"
-                              >
-                                <span className="font-black uppercase tracking-wider text-main">{c.name}</span>
-                                <span className="text-accent text-[10px] font-black uppercase">
-                                  {c.productCount} {c.productCount === 1 ? 'producto' : 'productos'} • {c.batchCount} lotes →
-                                </span>
-                              </button>
-                            ))}
-                        </div>
-                      </div>
-                    )}
 
                     <div className="flex flex-wrap items-center justify-center gap-3">
                       <button
@@ -3789,14 +4130,92 @@ export default function App() {
                       </button>
 
                       <button
-                        onClick={handleSeedSystemData}
-                        disabled={isSeedingData}
-                        className="flex items-center gap-2 px-5 py-3.5 bg-sidebar border border-muted/30 text-muted hover:text-accent hover:border-accent/40 rounded-xl font-bold uppercase text-xs tracking-widest transition-all disabled:opacity-50"
+                        onClick={() => {
+                          const newAlcoholProd: Product = {
+                            id: crypto.randomUUID(),
+                            name: 'Alcohol Etílico Extra Neutro 96° GL',
+                            description: 'Alcohol desnaturalizado de caña para formulación y destilería',
+                            category: 'Alcoholes',
+                            type: 'materia prima',
+                            unit: 'litro',
+                            minStock: 100
+                          };
+                          if (effectiveCompanyId) {
+                            dbService.saveProduct(effectiveCompanyId, newAlcoholProd);
+                          }
+                          setShowAlcoholOnly(true);
+                          addNotification({
+                            type: 'SUCCESS',
+                            title: 'Producto de Alcohol Creado',
+                            message: 'Se ha creado el producto "Alcohol Etílico Extra Neutro 96° GL".',
+                            linkTab: 'inventory'
+                          });
+                        }}
+                        className="flex items-center gap-2 px-5 py-3.5 bg-sidebar border border-accent/40 text-accent hover:bg-accent/10 rounded-xl font-bold uppercase text-xs tracking-widest transition-all"
                       >
-                        <Sparkles size={16} className={isSeedingData ? 'animate-spin' : ''} />
-                        <span>{isSeedingData ? 'Cargando Demo...' : 'Cargar Catálogo Demo'}</span>
+                        <Wine size={16} />
+                        <span>Crear Alcohol 96° GL</span>
                       </button>
                     </div>
+                  </div>
+                )}
+
+                {showAlcoholOnly && products.filter(isAlcoholProduct).length === 0 && (
+                  <div className="col-span-full py-16 px-8 text-center bg-sidebar rounded-[2rem] border-2 border-dashed border-accent/30 flex flex-col items-center justify-center space-y-4">
+                    <div className="w-16 h-16 rounded-3xl bg-accent/10 text-accent flex items-center justify-center border border-accent/20">
+                      <Wine size={32} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-black uppercase tracking-tight text-main mb-1">
+                        No hay productos de alcohol en el inventario
+                      </h3>
+                      <p className="text-xs text-muted font-bold max-w-md mx-auto uppercase tracking-wider leading-relaxed">
+                        Cree el producto base de alcohol a 96 °GL y conéctelo con la dilución a 27 °GL para control de inventario.
+                      </p>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        const newAlcoholProd: Product = {
+                          id: crypto.randomUUID(),
+                          name: 'Alcohol Etílico Extra Neutro 96° GL',
+                          description: 'Alcohol desnaturalizado de caña para formulación y destilería',
+                          category: 'Alcoholes',
+                          type: 'materia prima',
+                          unit: 'litro',
+                          minStock: 100
+                        };
+                        const dilAlcoholProd: Product = {
+                          id: crypto.randomUUID(),
+                          name: 'Alcohol Diluido a 27° GL',
+                          description: 'Solución hidroalcohólica diluida a 27° Gay-Lussac formulada a partir de Alcohol 96° GL',
+                          category: 'Alcoholes',
+                          type: 'producción',
+                          unit: 'litro',
+                          minStock: 100,
+                          recipe: [
+                            {
+                              materialProductId: newAlcoholProd.id,
+                              materialName: newAlcoholProd.name,
+                              quantityNeeded: 0.28125,
+                              unit: 'litro'
+                            }
+                          ]
+                        };
+                        if (effectiveCompanyId) {
+                          await dbService.saveProduct(effectiveCompanyId, newAlcoholProd);
+                          await dbService.saveProduct(effectiveCompanyId, dilAlcoholProd);
+                        }
+                        addNotification({
+                          type: 'SUCCESS',
+                          title: 'Alcohol 96° GL y 27° GL Conectados',
+                          message: 'Se han creado "Alcohol Etílico 96° GL" y "Alcohol Diluido a 27° GL" con receta de consumo PEPS vinculada.',
+                          linkTab: 'inventory'
+                        });
+                      }}
+                      className="px-6 py-3.5 bg-accent text-white rounded-xl font-black uppercase text-xs tracking-widest hover:brightness-110 shadow-lg shadow-brand-gold-shadow flex items-center gap-2"
+                    >
+                      <Plus size={16} /> Crear Alcohol 96° GL y Conectar a 27° GL
+                    </button>
                   </div>
                 )}
               </div>
@@ -4051,7 +4470,15 @@ export default function App() {
                                     <span className="text-sm font-black text-accent">{productStock[product.id]} {product.unit}s</span>
                                 </div>
                                 <button 
-                                    onClick={() => { setSelectedProductId(product.id); setShowModal('purchase'); setFormData({ ...formData, productDescription: '' }); }}
+                                    onClick={() => { 
+                                      setSelectedProductId(product.id); 
+                                      setShowModal('purchase'); 
+                                      setFormData({ 
+                                        ...formData, 
+                                        productDescription: '', 
+                                        alcoholGl: (showAlcoholOnly || isAlcoholProduct(product)) ? 96 : undefined 
+                                      }); 
+                                    }}
                                     className="w-full bg-accent text-white py-4 rounded-2xl font-black uppercase tracking-[0.1em] text-[10px] shadow-lg shadow-brand-gold-shadow active:scale-95 transition-all"
                                 >
                                     Registrar Compra
@@ -4501,7 +4928,7 @@ export default function App() {
                       <span className="text-[10px] font-black uppercase tracking-[0.2em] text-muted">Filtros de Productos Terminados</span>
                     </div>
                     <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-widest">
-                      {products.filter(p => p.type === 'producto terminado').length} productos terminados registrados
+                      {products.filter(p => p.type === 'producto terminado' || p.type === 'producción').length} productos terminados/producción
                     </span>
                   </div>
                   
@@ -4521,10 +4948,10 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Product Name Filter (Focused on Finished Products) */}
+                    {/* Product Name Filter (Focused on Finished Products & Production) */}
                     <div className="space-y-2">
                       <label className="text-[10px] font-black uppercase tracking-widest text-muted ml-1 flex items-center justify-between">
-                        <span>Producto Terminado</span>
+                        <span>Producto Terminado / Producción</span>
                         <span className="text-[9px] text-emerald-500 font-bold">Exclusivo</span>
                       </label>
                       <select 
@@ -4532,12 +4959,12 @@ export default function App() {
                         onChange={(e) => setKardexFilterProduct(e.target.value)}
                         className="w-full bg-main/5 border border-main/20 rounded-xl px-4 py-3 text-xs font-bold focus:border-accent outline-none transition-all appearance-none text-main"
                       >
-                        <option value="">TODOS LOS PRODUCTOS TERMINADOS</option>
+                        <option value="">TODOS LOS PRODUCTOS TERMINADOS / PRODUCCIÓN</option>
                         {products
-                          .filter(p => p.type === 'producto terminado')
+                          .filter(p => p.type === 'producto terminado' || p.type === 'producción')
                           .map(p => (
                             <option key={p.id} value={p.id}>
-                              {p.name} ({p.unit}s) - Stock: {productStock[p.id] || 0}
+                              {p.name} [{p.type}] ({p.unit}s) - Stock: {productStock[p.id] || 0}
                             </option>
                           ))
                         }
@@ -4617,11 +5044,11 @@ export default function App() {
                   </div>
                   <div className="flex flex-wrap items-center gap-4 md:gap-8 w-full xl:w-auto">
                     <div className="flex flex-col items-start xl:items-end">
-                      <span className="text-[8px] md:text-[9px] font-black uppercase text-emerald-500 tracking-wider">Valor Almacén P. Terminado</span>
+                      <span className="text-[8px] md:text-[9px] font-black uppercase text-emerald-500 tracking-wider">Valor Almacén P. Terminado / Producción</span>
                       <span className="text-xs md:text-sm font-black text-emerald-500">
                         Bs. {batches
-                          .filter(b => products.some(p => p.id === b.productId && p.type === 'producto terminado') && b.remainingQuantity > 0)
-                          .reduce((acc, b) => acc + (b.remainingQuantity * b.unitCost), 0)
+                          .filter(b => products.some(p => p.id === b.productId && (p.type === 'producto terminado' || p.type === 'producción')) && Number(b.remainingQuantity) > 0)
+                          .reduce((acc, b) => acc + (Number(b.remainingQuantity) * Number(b.unitCost || 0)), 0)
                           .toLocaleString()}
                       </span>
                     </div>
@@ -4700,13 +5127,16 @@ export default function App() {
                                             setSelectedBatchId(entry.batchId!);
                                             const batch = batches.find(b => b.id === entry.batchId);
                                             if (batch) {
+                                              const prod = products.find(p => p.id === batch.productId);
+                                              const isAlc = showAlcoholOnly || isAlcoholProduct(prod);
                                               setFormData({
                                                 ...formData,
                                                 quantity: batch.quantity,
                                                 cost: batch.unitCost,
                                                 supplier: batch.supplier,
                                                 productDescription: batch.description || '',
-                                                entryDate: batch.entryDate ? (batch.entryDate.includes('T') ? batch.entryDate.split('T')[0] : batch.entryDate) : new Date().toISOString().split('T')[0]
+                                                entryDate: batch.entryDate ? (batch.entryDate.includes('T') ? batch.entryDate.split('T')[0] : batch.entryDate) : new Date().toISOString().split('T')[0],
+                                                alcoholGl: isAlc ? (batch.alcoholGl !== undefined ? batch.alcoholGl : 96) : undefined
                                               });
                                               setShowModal('edit_batch');
                                             }
@@ -5161,7 +5591,7 @@ export default function App() {
                       </button>
                    </div>
 
-                   {availableCompanies.length > 0 && (
+                   {availableCompanies.length > 1 && (
                      <div className="bg-main/5 p-6 rounded-2xl border border-main/10 mt-6 space-y-4">
                        <div className="flex items-center justify-between">
                          <div className="flex items-center gap-2">
@@ -5339,6 +5769,7 @@ export default function App() {
                         <div className="space-y-1.5">
                           {productRecipe.map((item, idx) => {
                             const mat = products.find(p => p.id === item.materialProductId);
+                            const displayQty = Number(item.quantityNeeded ?? (item as any).quantity ?? 0);
                             return (
                               <div key={idx} className="flex items-center justify-between p-2 rounded-xl bg-sidebar border border-main text-xs">
                                 <div className="flex items-center gap-2">
@@ -5348,14 +5779,14 @@ export default function App() {
                                   <div>
                                     <span className="font-bold text-main">{mat?.name || item.materialName || 'Material'}</span>
                                     <span className="text-[9px] text-muted block uppercase tracking-wider">
-                                      Consume: <b className="text-accent">{item.quantityNeeded}</b> {mat?.unit || item.unit || 'unidad'}s
+                                      Consume: <b className="text-accent">{displayQty}</b> {mat?.unit || item.unit || 'unidad'}s por unidad
                                     </span>
                                   </div>
                                 </div>
                                 <button
                                   type="button"
                                   onClick={() => setProductRecipe(prev => prev.filter((_, i) => i !== idx))}
-                                  className="p-1 text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
+                                  className="p-1 text-red-500 hover:bg-red-500/10 rounded-lg transition-colors cursor-pointer"
                                   title="Quitar material"
                                 >
                                   <X size={14} />
@@ -5373,31 +5804,31 @@ export default function App() {
                           className="flex-[2] bg-sidebar border border-main rounded-xl px-3 py-2 text-xs font-bold text-main outline-none"
                           defaultValue=""
                         >
-                          <option value="" disabled>Seleccione materia prima...</option>
+                          <option value="" disabled>Seleccione materia prima o insumo...</option>
                           {products
-                            .filter(p => p.type === 'materia prima' || p.type === 'producción')
                             .map(p => (
                               <option key={p.id} value={p.id}>
-                                {p.name} ({p.unit}s) - Stock: {productStock[p.id] || 0}
+                                {p.name} [{p.type}] ({p.unit}s) - Stock: {productStock[p.id] || 0}
                               </option>
                             ))
                           }
                         </select>
                         <input
                           id="new-recipe-qty-input"
-                          type="number"
-                          step="0.01"
-                          min="0.001"
-                          placeholder="Cantidad"
-                          className="flex-1 bg-sidebar border border-main rounded-xl px-3 py-2 text-xs font-bold text-main outline-none w-24"
+                          type="text"
+                          inputMode="decimal"
+                          placeholder="Cantidad (ej. 0.5)"
+                          className="flex-1 bg-sidebar border border-main rounded-xl px-3 py-2 text-xs font-bold text-main outline-none w-32 font-mono"
                         />
                         <button
                           type="button"
                           onClick={() => {
                             const sel = document.getElementById('new-recipe-material-select') as HTMLSelectElement;
                             const qty = document.getElementById('new-recipe-qty-input') as HTMLInputElement;
-                            if (!sel || !sel.value || !qty || Number(qty.value) <= 0) {
-                              alert('Seleccione un material e ingrese la cantidad consumida.');
+                            const rawVal = (qty?.value || '').trim().replace(',', '.');
+                            const parsedQty = parseFloat(rawVal);
+                            if (!sel || !sel.value || isNaN(parsedQty) || parsedQty <= 0) {
+                              alert('Seleccione un material e ingrese una cantidad válida mayor a cero (ejemplo: 0.5 o 2).');
                               return;
                             }
                             const mat = products.find(p => p.id === sel.value);
@@ -5405,14 +5836,14 @@ export default function App() {
                               ...prev.filter(item => item.materialProductId !== sel.value),
                               {
                                 materialProductId: sel.value,
-                                materialName: mat?.name,
-                                quantityNeeded: Number(qty.value),
-                                unit: mat?.unit
+                                materialName: mat?.name || 'Materia Prima',
+                                quantityNeeded: parsedQty,
+                                unit: mat?.unit || 'unidad'
                               }
                             ]);
                             qty.value = '';
                           }}
-                          className="bg-accent text-white px-3 py-2 rounded-xl font-bold text-xs hover:brightness-110 flex items-center justify-center gap-1"
+                          className="bg-accent text-white px-3 py-2 rounded-xl font-bold text-xs hover:brightness-110 flex items-center justify-center gap-1 cursor-pointer"
                         >
                           <Plus size={14} /> Añadir
                         </button>
@@ -5688,6 +6119,36 @@ export default function App() {
                     </div>
                   )}
 
+                  {showModal === 'entry' && selectedProductId && (() => {
+                    const p = products.find(prod => prod.id === selectedProductId);
+                    const isMfg = p?.type === 'producto terminado' || p?.type === 'producción';
+                    const hasRecipe = p?.recipe && p.recipe.length > 0;
+                    if (!isMfg) return null;
+
+                    return (
+                      <div className={cn(
+                        "p-3.5 rounded-xl border mb-3 text-xs",
+                        hasRecipe 
+                          ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-600 dark:text-emerald-400"
+                          : "bg-amber-500/10 border-amber-500/25 text-amber-600 dark:text-amber-400"
+                      )}>
+                        <div className="flex items-center gap-2 font-black uppercase text-[10px] tracking-wider mb-1">
+                          <Factory size={14} className="shrink-0" />
+                          <span>Producto de {p?.type === 'producción' ? 'Producción' : 'Producto Terminado'}</span>
+                        </div>
+                        {hasRecipe ? (
+                          <p className="text-[11px] text-muted font-medium">
+                            Tiene asignada receta de <b>{p.recipe!.length} materias primas</b>. Al registrar esta entrada, se descontará automáticamente el stock de insumos por el método PEPS.
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-muted font-medium">
+                            Sin receta aún. Puedes asignarle insumos en el botón <b>«Fabricar / Producir»</b> o en <b>«Editar»</b> para que descuente automáticamente las materias primas utilizadas.
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   <div>
                     <div className="flex justify-between items-end mb-2">
                         <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em]">
@@ -5787,6 +6248,55 @@ export default function App() {
                       />
                     </div>
                   )}
+
+                  {(() => {
+                    const currentProdObj = products.find(p => p.id === selectedProductId) || (selectedBatchId ? products.find(p => p.id === batches.find(b => b.id === selectedBatchId)?.productId) : null);
+                    const isAlcoholContext = showAlcoholOnly || isAlcoholProduct(currentProdObj);
+
+                    if (!(showModal === 'entry' || showModal === 'purchase' || showModal === 'edit_batch') || !isAlcoholContext) {
+                      return null;
+                    }
+
+                    return (
+                      <div className="bg-accent/5 p-4 rounded-2xl border border-accent/20">
+                        <div className="flex justify-between items-center mb-2">
+                          <label className="block text-[10px] font-black text-accent uppercase tracking-[0.3em] flex items-center gap-1.5">
+                            <Wine size={14} />
+                            Grado Alcohólico (°GL) *
+                          </label>
+                          <span className="text-[10px] font-black uppercase text-cyan-600 dark:text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20 font-mono">
+                            {(formData.alcoholGl !== undefined ? Number(formData.alcoholGl) : 96).toFixed(2).replace(/\.00$/, '')}° GL
+                          </span>
+                        </div>
+                        <div className="relative">
+                          <input 
+                            type="number" 
+                            step="0.01"
+                            min="0"
+                            max="100"
+                            required
+                            className="w-full bg-black/5 dark:bg-black/30 border border-main rounded-xl px-5 py-3.5 focus:outline-none focus:border-accent font-bold text-main font-mono text-sm"
+                            value={formData.alcoholGl !== undefined ? formData.alcoholGl : 96}
+                            onFocus={(e) => e.target.select()}
+                            onKeyDown={(e) => {
+                              if (['e', 'E', '+'].includes(e.key)) e.preventDefault();
+                            }}
+                            onChange={e => {
+                              const val = e.target.value === '' ? 0 : parseFloat(e.target.value);
+                              setFormData({ ...formData, alcoholGl: val });
+                            }}
+                            placeholder="96 o 96.3 o 96.77"
+                          />
+                          <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-black text-accent uppercase font-mono">
+                            °GL
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-muted font-bold mt-2 flex items-center gap-1">
+                          <span>🧪</span> Grado alcohólico registrado en inventario de alcohol (ej: 96, 96.3 o 96.77 °GL).
+                        </p>
+                      </div>
+                    );
+                  })()}
 
                   <div>
                     <label className="block text-[10px] font-black text-muted uppercase tracking-[0.3em] mb-2">Descripción / Motivo</label>
@@ -6401,25 +6911,36 @@ export default function App() {
                 const packaging = selectedProd.packaging;
 
                 // Calculate total base units according to mode
-                let effectiveUnits = Number(produceForm.quantityToProduce) || 0;
-                if (produceForm.producedIn === 'cajas' && packaging?.unitsPerBox) {
-                  effectiveUnits = (Number(produceForm.boxCount) || 0) * packaging.unitsPerBox;
-                } else if (produceForm.producedIn === 'bultos' && packaging?.unitsPerBundle) {
-                  effectiveUnits = (Number(produceForm.bundleCount) || 0) * packaging.unitsPerBundle;
+                const boxMultiplier = (packaging?.unitsPerBox && Number(packaging.unitsPerBox) > 0) ? Number(packaging.unitsPerBox) : 1;
+                const bundleMultiplier = (packaging?.unitsPerBundle && Number(packaging.unitsPerBundle) > 0) ? Number(packaging.unitsPerBundle) : 1;
+
+                let effectiveUnits = 0;
+                if (produceForm.producedIn === 'cajas') {
+                  const boxes = Number(produceForm.boxCount) || 0;
+                  effectiveUnits = boxes > 0 ? (boxes * boxMultiplier) : boxMultiplier;
+                } else if (produceForm.producedIn === 'bultos') {
+                  const bundles = Number(produceForm.bundleCount) || 0;
+                  effectiveUnits = bundles > 0 ? (bundles * bundleMultiplier) : bundleMultiplier;
+                } else {
+                  const qty = Number(produceForm.quantityToProduce) || 0;
+                  effectiveUnits = qty > 0 ? qty : 1;
                 }
 
                 // Check material feasibility
                 const materialsStatus = recipe.map(item => {
-                  const needed = item.quantityNeeded * effectiveUnits;
-                  const available = productStock[item.materialProductId] || 0;
+                  const qtyNeeded = Number(item.quantityNeeded ?? (item as any).quantity ?? (item as any).amount ?? 0) || 0;
+                  const needed = qtyNeeded * effectiveUnits;
+                  const available = Number(productStock[item.materialProductId]) || 0;
                   const mat = products.find(p => p.id === item.materialProductId);
                   return {
                     ...item,
+                    materialProductId: item.materialProductId,
+                    quantityNeeded: qtyNeeded,
                     matName: mat?.name || item.materialName || 'Material',
                     unit: mat?.unit || item.unit || 'unidad',
                     needed,
                     available,
-                    isSufficient: available >= needed
+                    isSufficient: available >= (needed - 1e-6)
                   };
                 });
 
@@ -6492,12 +7013,16 @@ export default function App() {
                           </label>
                           <input
                             type="number"
-                            min="1"
-                            step="1"
+                            min="0.001"
+                            step="any"
                             required
-                            value={produceForm.quantityToProduce}
+                            value={produceForm.quantityToProduce === 0 ? '' : produceForm.quantityToProduce}
                             onFocus={e => e.target.select()}
-                            onChange={e => setProduceForm({ ...produceForm, quantityToProduce: Number(e.target.value) || 0 })}
+                            onChange={e => {
+                              const raw = e.target.value.replace(',', '.');
+                              const val = parseFloat(raw);
+                              setProduceForm({ ...produceForm, quantityToProduce: isNaN(val) ? 0 : val });
+                            }}
                             className="w-full bg-main/5 border border-main rounded-xl px-4 py-3 font-bold text-main focus:border-accent outline-none text-base font-mono"
                           />
                         </div>
@@ -6510,7 +7035,7 @@ export default function App() {
                               📦 Número de <b>Cajas</b> a fabricar:
                             </label>
                             <span className="text-[10px] font-mono text-blue-500 font-bold">
-                              Cada caja lleva {packaging?.unitsPerBox || 1} {selectedProd.unit}s
+                              Cada caja lleva {boxMultiplier} {selectedProd.unit}s
                             </span>
                           </div>
                           <input
@@ -6518,9 +7043,12 @@ export default function App() {
                             min="1"
                             step="1"
                             required
-                            value={produceForm.boxCount}
+                            value={produceForm.boxCount === 0 ? '' : produceForm.boxCount}
                             onFocus={e => e.target.select()}
-                            onChange={e => setProduceForm({ ...produceForm, boxCount: Number(e.target.value) || 0 })}
+                            onChange={e => {
+                              const val = parseInt(e.target.value, 10);
+                              setProduceForm({ ...produceForm, boxCount: isNaN(val) ? 0 : val });
+                            }}
                             className="w-full bg-main/5 border border-main rounded-xl px-4 py-3 font-bold text-main focus:border-blue-500 outline-none text-base font-mono"
                           />
                           <div className="p-2.5 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 font-bold text-xs flex justify-between">
@@ -6537,7 +7065,7 @@ export default function App() {
                               🧺 Número de <b>Bultos</b> a fabricar:
                             </label>
                             <span className="text-[10px] font-mono text-indigo-500 font-bold">
-                              Cada bulto lleva {packaging?.unitsPerBundle || 1} {selectedProd.unit}s
+                              Cada bulto lleva {bundleMultiplier} {selectedProd.unit}s
                             </span>
                           </div>
                           <input
@@ -6545,9 +7073,12 @@ export default function App() {
                             min="1"
                             step="1"
                             required
-                            value={produceForm.bundleCount}
+                            value={produceForm.bundleCount === 0 ? '' : produceForm.bundleCount}
                             onFocus={e => e.target.select()}
-                            onChange={e => setProduceForm({ ...produceForm, bundleCount: Number(e.target.value) || 0 })}
+                            onChange={e => {
+                              const val = parseInt(e.target.value, 10);
+                              setProduceForm({ ...produceForm, bundleCount: isNaN(val) ? 0 : val });
+                            }}
                             className="w-full bg-main/5 border border-main rounded-xl px-4 py-3 font-bold text-main focus:border-indigo-500 outline-none text-base font-mono"
                           />
                           <div className="p-2.5 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-bold text-xs flex justify-between">
@@ -6576,7 +7107,7 @@ export default function App() {
                         <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-xs">
                           <p className="font-bold">Este producto terminado aún no tiene materiales asignados.</p>
                           <p className="text-[11px] mt-1 text-muted">
-                            Haz clic en el botón «Editar» del producto para agregar los materiales que consume por unidad.
+                            Utiliza el formulario de abajo para agregar las materias primas que consume por unidad producida.
                           </p>
                         </div>
                       ) : (
@@ -6591,24 +7122,117 @@ export default function App() {
                                   : "bg-red-500/10 border-red-500/30 text-red-500"
                               )}
                             >
-                              <div>
-                                <span className="font-bold text-main block">{mat.matName}</span>
-                                <span className="text-[10px] text-muted font-mono">
-                                  Consume {mat.quantityNeeded} × {effectiveUnits} = <b className="text-accent">{mat.needed.toFixed(2)}</b> {mat.unit}s
-                                </span>
+                              <div className="space-y-0.5">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-main">{mat.matName}</span>
+                                  <span className="text-[10px] text-muted font-mono bg-main/5 px-2 py-0.5 rounded">
+                                    {mat.quantityNeeded} {mat.unit} por 1 {selectedProd.unit}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-muted font-mono">
+                                  Consume en total ({effectiveUnits} {selectedProd.unit}s): <b className="text-accent font-bold text-xs">{mat.needed.toFixed(2)} {mat.unit}s</b>
+                                </div>
                               </div>
-                              <div className="text-right">
-                                <span className={cn(
-                                  "text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider",
-                                  mat.isSufficient ? "bg-emerald-500/10 text-emerald-500" : "bg-red-500 text-white font-black"
-                                )}>
-                                  {mat.isSufficient ? `Stock OK (${mat.available})` : `Faltan ${(mat.needed - mat.available).toFixed(2)}`}
-                                </span>
+                              <div className="flex items-center gap-3">
+                                <div className="text-right">
+                                  <span className={cn(
+                                    "text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider block",
+                                    mat.isSufficient ? "bg-emerald-500/10 text-emerald-500" : "bg-red-500 text-white font-black"
+                                  )}>
+                                    {mat.isSufficient ? `Stock OK (${mat.available})` : `Faltan ${(mat.needed - mat.available).toFixed(2)}`}
+                                  </span>
+                                  <span className="text-[9px] text-muted">Disp: {mat.available} {mat.unit}s</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const updatedRecipe = (selectedProd.recipe || []).filter(r => r.materialProductId !== mat.materialProductId);
+                                    const updatedProd: Product = { ...selectedProd, recipe: updatedRecipe };
+                                    setProducts(prev => prev.map(p => p.id === updatedProd.id ? updatedProd : p));
+                                    if (effectiveCompanyId) {
+                                      await dbService.saveProduct(effectiveCompanyId, updatedProd);
+                                    }
+                                  }}
+                                  className="p-1.5 text-muted hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all cursor-pointer"
+                                  title="Quitar este insumo de la receta"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
                               </div>
                             </div>
                           ))}
                         </div>
                       )}
+
+                      {/* Asignar o agregar materias primas a la receta directamente */}
+                      <div className="pt-3 border-t border-amber-500/20 space-y-2">
+                        <label className="block text-[10px] font-black uppercase tracking-wider text-muted">
+                          {recipe.length === 0 ? '➕ Asignar materias primas que consume este producto:' : '➕ Agregar o actualizar insumo en la receta:'}
+                        </label>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <select
+                            id="produce-quick-material-select"
+                            className="flex-[2] bg-sidebar border border-main rounded-xl px-3 py-2 text-xs font-bold text-main outline-none"
+                            defaultValue=""
+                          >
+                            <option value="" disabled>Seleccione insumo o materia prima...</option>
+                            {products
+                              .filter(p => p.id !== selectedProd.id)
+                              .map(p => (
+                                <option key={p.id} value={p.id}>
+                                  {p.name} [{p.type}] ({p.unit}s) - Stock: {productStock[p.id] || 0}
+                                </option>
+                              ))
+                            }
+                          </select>
+                          <input
+                            id="produce-quick-qty-input"
+                            type="text"
+                            inputMode="decimal"
+                            placeholder={`Por 1 ${selectedProd.unit} (ej. 0.5)`}
+                            className="flex-1 bg-sidebar border border-main rounded-xl px-3 py-2 text-xs font-bold text-main outline-none w-36 font-mono"
+                          />
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const sel = document.getElementById('produce-quick-material-select') as HTMLSelectElement;
+                              const qty = document.getElementById('produce-quick-qty-input') as HTMLInputElement;
+                              const rawVal = (qty?.value || '').trim().replace(',', '.');
+                              const parsedQty = parseFloat(rawVal);
+                              if (!sel || !sel.value || isNaN(parsedQty) || parsedQty <= 0) {
+                                alert(`Seleccione un insumo e ingrese la cantidad requerida por cada 1 ${selectedProd.unit} producida (ejemplo: 0.5 o 2).`);
+                                return;
+                              }
+                              const mat = products.find(p => p.id === sel.value);
+                              const newRecipeItem = {
+                                materialProductId: sel.value,
+                                materialName: mat?.name || 'Materia Prima',
+                                quantityNeeded: parsedQty,
+                                unit: mat?.unit || 'unidad'
+                              };
+                              const updatedRecipe = [
+                                ...(selectedProd.recipe || []).filter(r => r.materialProductId !== sel.value),
+                                newRecipeItem
+                              ];
+                              const updatedProd: Product = {
+                                ...selectedProd,
+                                recipe: updatedRecipe
+                              };
+                              setProducts(prev => prev.map(p => p.id === updatedProd.id ? updatedProd : p));
+                              if (effectiveCompanyId) {
+                                await dbService.saveProduct(effectiveCompanyId, updatedProd);
+                              }
+                              qty.value = '';
+                            }}
+                            className="bg-accent text-white px-3 py-2 rounded-xl font-bold text-xs hover:brightness-110 flex items-center justify-center gap-1 shrink-0 shadow-sm cursor-pointer"
+                          >
+                            <Plus size={14} /> Añadir a Receta
+                          </button>
+                        </div>
+                        <p className="text-[10px] text-muted italic">
+                          * Ingrese cuánto consume por cada <b>1 {selectedProd.unit}</b> del producto (ej: 0.5 o 0,25). Al producir {effectiveUnits} {selectedProd.unit}s se descontará automáticamente.
+                        </p>
+                      </div>
 
                       {!allAvailable && recipe.length > 0 && (
                         <p className="text-[11px] font-bold text-red-500 flex items-center gap-1.5 pt-1">
@@ -6645,21 +7269,42 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* Mensaje de error si falla la producción */}
+                    {productionError && (
+                      <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-500 text-xs font-bold flex items-start gap-2.5">
+                        <AlertTriangle size={16} className="shrink-0 mt-0.5 text-red-500" />
+                        <div>
+                          <p className="font-black uppercase tracking-wide">Error en Fabricación</p>
+                          <p className="font-normal mt-0.5 whitespace-pre-line">{productionError}</p>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Acciones del Modal */}
                     <div className="flex gap-4 pt-4 border-t border-main/20">
                       <button 
                         type="button" 
                         onClick={() => setShowModal(null)}
-                        className="flex-1 bg-main/5 text-muted py-3.5 rounded-xl font-bold border border-main hover:bg-main/10 transition-all text-xs uppercase tracking-widest"
+                        disabled={isExecutingProduction}
+                        className="flex-1 bg-main/5 text-muted py-3.5 rounded-xl font-bold border border-main hover:bg-main/10 transition-all text-xs uppercase tracking-widest disabled:opacity-50"
                       >
                         Cancelar
                       </button>
                       <button 
                         type="submit"
-                        disabled={effectiveUnits <= 0 || recipe.length === 0 || !allAvailable}
+                        disabled={effectiveUnits <= 0 || recipe.length === 0 || !allAvailable || isExecutingProduction}
                         className="flex-[2] bg-emerald-600 hover:bg-emerald-500 text-white py-3.5 rounded-xl font-black tracking-widest hover:brightness-110 shadow-lg shadow-emerald-950/20 uppercase text-xs disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
                       >
-                        <Factory size={16} /> Confirmar Fabricación ({effectiveUnits} {selectedProd.unit}s)
+                        {isExecutingProduction ? (
+                          <>
+                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            <span>Descontando Insumos y Fabricando...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Factory size={16} /> Confirmar Fabricación ({effectiveUnits} {selectedProd.unit}s)
+                          </>
+                        )}
                       </button>
                     </div>
                   </div>
@@ -6838,6 +7483,7 @@ export default function App() {
                     <div className="space-y-1.5">
                       {editProductForm.recipe.map((item, idx) => {
                         const mat = products.find(p => p.id === item.materialProductId);
+                        const displayQty = Number(item.quantityNeeded ?? (item as any).quantity ?? 0);
                         return (
                           <div key={idx} className="flex items-center justify-between p-2 rounded-xl bg-sidebar border border-main text-xs">
                             <div className="flex items-center gap-2">
@@ -6847,7 +7493,7 @@ export default function App() {
                               <div>
                                 <span className="font-bold text-main">{mat?.name || item.materialName || 'Material'}</span>
                                 <span className="text-[9px] text-muted block uppercase tracking-wider">
-                                  Consume: <b className="text-accent">{item.quantityNeeded}</b> {mat?.unit || item.unit || 'unidad'}s
+                                  Consume: <b className="text-accent">{displayQty}</b> {mat?.unit || item.unit || 'unidad'}s por unidad
                                 </span>
                               </div>
                             </div>
@@ -6857,7 +7503,7 @@ export default function App() {
                                 ...prev,
                                 recipe: prev.recipe.filter((_, i) => i !== idx)
                               }))}
-                              className="p-1 text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
+                              className="p-1 text-red-500 hover:bg-red-500/10 rounded-lg transition-colors cursor-pointer"
                               title="Quitar material"
                             >
                               <X size={14} />
@@ -6875,31 +7521,32 @@ export default function App() {
                       className="flex-[2] bg-sidebar border border-main rounded-xl px-3 py-2 text-xs font-bold text-main outline-none"
                       defaultValue=""
                     >
-                      <option value="" disabled>Seleccione materia prima...</option>
+                      <option value="" disabled>Seleccione materia prima o insumo...</option>
                       {products
-                        .filter(p => p.id !== productToEdit.id && (p.type === 'materia prima' || p.type === 'producción'))
+                        .filter(p => p.id !== productToEdit.id)
                         .map(p => (
                           <option key={p.id} value={p.id}>
-                            {p.name} ({p.unit}s) - Stock: {productStock[p.id] || 0}
+                            {p.name} [{p.type}] ({p.unit}s) - Stock: {productStock[p.id] || 0}
                           </option>
                         ))
                       }
                     </select>
                     <input
                       id="edit-recipe-qty-input"
-                      type="number"
-                      step="0.01"
-                      min="0.001"
-                      placeholder="Cantidad"
-                      className="flex-1 bg-sidebar border border-main rounded-xl px-3 py-2 text-xs font-bold text-main outline-none w-24"
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="Cantidad (ej. 0.5)"
+                      className="flex-1 bg-sidebar border border-main rounded-xl px-3 py-2 text-xs font-bold text-main outline-none w-32 font-mono"
                     />
                     <button
                       type="button"
                       onClick={() => {
                         const sel = document.getElementById('edit-recipe-material-select') as HTMLSelectElement;
                         const qty = document.getElementById('edit-recipe-qty-input') as HTMLInputElement;
-                        if (!sel || !sel.value || !qty || Number(qty.value) <= 0) {
-                          alert('Seleccione un material e ingrese la cantidad consumida.');
+                        const rawVal = (qty?.value || '').trim().replace(',', '.');
+                        const parsedQty = parseFloat(rawVal);
+                        if (!sel || !sel.value || isNaN(parsedQty) || parsedQty <= 0) {
+                          alert('Seleccione un material e ingrese una cantidad válida mayor a cero (ejemplo: 0.5 o 2).');
                           return;
                         }
                         const mat = products.find(p => p.id === sel.value);
@@ -6909,15 +7556,15 @@ export default function App() {
                             ...prev.recipe.filter(r => r.materialProductId !== sel.value),
                             {
                               materialProductId: sel.value,
-                              materialName: mat?.name,
-                              quantityNeeded: Number(qty.value),
-                              unit: mat?.unit
+                              materialName: mat?.name || 'Materia Prima',
+                              quantityNeeded: parsedQty,
+                              unit: mat?.unit || 'unidad'
                             }
                           ]
                         }));
                         qty.value = '';
                       }}
-                      className="bg-accent text-white px-3 py-2 rounded-xl font-bold text-xs hover:brightness-110 flex items-center justify-center gap-1"
+                      className="bg-accent text-white px-3 py-2 rounded-xl font-bold text-xs hover:brightness-110 flex items-center justify-center gap-1 cursor-pointer"
                     >
                       <Plus size={14} /> Añadir
                     </button>

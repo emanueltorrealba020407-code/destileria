@@ -39,6 +39,7 @@ export interface Batch {
   unitCost: number;
   supplier: string;
   description?: string;
+  alcoholGl?: number; // Grado alcohólico Gay-Lussac con decimales (ej. 96, 96.3, 96.77 °GL)
   type?: 'ENTRY' | 'PURCHASE';
   performedBy?: string;
 }

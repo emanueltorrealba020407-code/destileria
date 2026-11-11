@@ -92,12 +92,13 @@ export const dbService = {
     }
   },
 
-  async createCompany(companyId: string, name: string, ownerId: string) {
+  async createCompany(companyId: string, name: string, ownerId: string, ownerEmail?: string) {
     try {
       await setDoc(doc(db, 'companies', companyId), {
         id: companyId,
         name,
         ownerId,
+        ownerEmail: ownerEmail?.trim().toLowerCase() || '',
         createdAt: serverTimestamp()
       }, { merge: true });
     } catch (e) {
@@ -199,6 +200,72 @@ export const dbService = {
       console.warn('Error checking company products:', e);
       return false;
     }
+  },
+
+  async getUserCompanies(email: string, uid: string): Promise<Array<{ id: string; name: string; productCount: number; batchCount: number }>> {
+    const results: Array<{ id: string; name: string; productCount: number; batchCount: number }> = [];
+    const normEmail = email.trim().toLowerCase();
+
+    // 1. Company owned by this user (uid is the companyId)
+    if (uid) {
+      try {
+        const ownDoc = await getDoc(doc(db, 'companies', uid));
+        if (ownDoc.exists()) {
+          const data = ownDoc.data();
+          let pCount = 0;
+          let bCount = 0;
+          try {
+            const pSnap = await getDocs(collection(db, `companies/${uid}/products`));
+            pCount = pSnap.size;
+            const bSnap = await getDocs(collection(db, `companies/${uid}/batches`));
+            bCount = bSnap.size;
+          } catch {
+            // ignore
+          }
+          results.push({
+            id: uid,
+            name: data.name || 'Mi Empresa',
+            productCount: pCount,
+            batchCount: bCount
+          });
+        }
+      } catch (e) {
+        console.warn('Error fetching own company:', e);
+      }
+    }
+
+    // 2. Any company where this specific user's email was registered as team member
+    if (normEmail) {
+      try {
+        const teamMatch = await this.findTeamMemberByEmail(normEmail);
+        if (teamMatch && teamMatch.companyId !== uid && !results.some(r => r.id === teamMatch.companyId)) {
+          const compDoc = await getDoc(doc(db, 'companies', teamMatch.companyId));
+          if (compDoc.exists()) {
+            const compData = compDoc.data();
+            let pCount = 0;
+            let bCount = 0;
+            try {
+              const pSnap = await getDocs(collection(db, `companies/${teamMatch.companyId}/products`));
+              pCount = pSnap.size;
+              const bSnap = await getDocs(collection(db, `companies/${teamMatch.companyId}/batches`));
+              bCount = bSnap.size;
+            } catch {
+              // ignore
+            }
+            results.push({
+              id: teamMatch.companyId,
+              name: compData.name || 'Empresa Vinculada',
+              productCount: pCount,
+              batchCount: bCount
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('Error fetching team company by email:', e);
+      }
+    }
+
+    return results;
   },
 
   async listCompaniesWithStats(): Promise<Array<{ id: string; name: string; productCount: number; batchCount: number }>> {
@@ -366,6 +433,18 @@ export const dbService = {
             { materialProductId: 'prod-emp-004', materialName: 'Botella de Vidrio 750ml Especial Ormón', quantityNeeded: 1, unit: 'unidad' },
             { materialProductId: 'prod-emp-005', materialName: 'Tapa Corcho Sintético Hermético 28mm', quantityNeeded: 1, unit: 'unidad' }
           ]
+        },
+        {
+          id: 'prod-alc-027',
+          name: 'Alcohol Diluido a 27° GL',
+          description: 'Solución hidroalcohólica diluida a 27° Gay-Lussac formulada a partir de Alcohol 96° GL',
+          category: 'Alcoholes',
+          type: 'producción',
+          unit: 'litro',
+          minStock: 200,
+          recipe: [
+            { materialProductId: 'prod-mat-001', materialName: 'Alcohol Etílico Extra Neutro 96°', quantityNeeded: 0.28125, unit: 'litro' }
+          ]
         }
       ];
 
@@ -385,8 +464,22 @@ export const dbService = {
           remainingQuantity: 2200,
           unitCost: 8500,
           supplier: 'Destiladora Nacional S.A.S.',
-          description: 'Lote inicial de alcohol etílico alta pureza',
+          description: 'Lote inicial de alcohol etílico alta pureza 96° GL',
+          alcoholGl: 96,
           type: 'PURCHASE',
+          performedBy: userName
+        },
+        {
+          id: 'batch-alc-027',
+          productId: 'prod-alc-027',
+          entryDate: initialDate,
+          quantity: 1000,
+          remainingQuantity: 1000,
+          unitCost: 2390.63,
+          supplier: 'Área de Dilución y Mezcla',
+          description: 'Lote inicial de alcohol diluido a 27° GL obtenido de alcohol 96° GL',
+          alcoholGl: 27,
+          type: 'ENTRY',
           performedBy: userName
         },
         {
